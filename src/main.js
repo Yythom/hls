@@ -1271,6 +1271,260 @@ async function downloadHlsCandidate(item, filePath) {
   }
 }
 
+function parseTimecode(input) {
+  if (input === null || input === undefined) {
+    throw new Error("Empty timecode");
+  }
+  if (typeof input === "number") {
+    if (!Number.isFinite(input) || input < 0) throw new Error(`Invalid timecode: ${input}`);
+    return input;
+  }
+  const text = String(input).trim();
+  if (!text) throw new Error("Empty timecode");
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+  const parts = text.split(":");
+  if (parts.length < 2 || parts.length > 3) {
+    throw new Error(`Invalid timecode: ${text}`);
+  }
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => Number.isNaN(n) || n < 0)) {
+    throw new Error(`Invalid timecode: ${text}`);
+  }
+  if (parts.length === 2) return nums[0] * 60 + nums[1];
+  return nums[0] * 3600 + nums[1] * 60 + nums[2];
+}
+
+function formatTimecode(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds * 1000);
+  const ms = total % 1000;
+  const totalSec = Math.floor(total / 1000);
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600);
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  const base = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  return ms ? `${base}.${pad(ms, 3)}` : base;
+}
+
+function probeDuration(filePath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath(), ["-hide_banner", "-i", filePath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 50000) stderr = stderr.slice(-50000);
+    });
+    child.on("error", reject);
+    child.on("close", () => {
+      const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!match) {
+        reject(new Error("Could not determine duration. Is the file a valid video?"));
+        return;
+      }
+      const [, h, m, s] = match;
+      resolve(Number(h) * 3600 + Number(m) * 60 + Number(s));
+    });
+  });
+}
+
+function normalizeDeleteRanges(deleteRanges, totalDuration) {
+  const sorted = deleteRanges
+    .map((r) => {
+      const a = parseTimecode(r.start);
+      const b = parseTimecode(r.end);
+      const lo = Math.max(0, Math.min(a, b));
+      const hi = Math.min(totalDuration, Math.max(a, b));
+      return [lo, hi];
+    })
+    .filter(([a, b]) => b > a + 0.001)
+    .sort((a, b) => a[0] - b[0]);
+
+  const merged = [];
+  for (const range of sorted) {
+    if (merged.length && range[0] <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], range[1]);
+    } else {
+      merged.push([...range]);
+    }
+  }
+  return merged;
+}
+
+function computeKeepRanges(deleteRanges, totalDuration) {
+  const keep = [];
+  let cursor = 0;
+  for (const [a, b] of deleteRanges) {
+    if (a > cursor + 0.001) keep.push([cursor, a]);
+    cursor = Math.max(cursor, b);
+  }
+  if (totalDuration > cursor + 0.001) keep.push([cursor, totalDuration]);
+  return keep;
+}
+
+let activeTrimChild = null;
+
+function spawnTrimFfmpeg(args, { onProgressTime } = {}) {
+  return new Promise((resolve, reject) => {
+    logEvent("debug", "Running trim ffmpeg", { args: safeFfmpegArgs(args) });
+    const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+    activeTrimChild = child;
+
+    let stderr = "";
+    let stdoutBuf = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdoutBuf += chunk.toString();
+      let idx;
+      while ((idx = stdoutBuf.indexOf("\n")) >= 0) {
+        const line = stdoutBuf.slice(0, idx);
+        stdoutBuf = stdoutBuf.slice(idx + 1);
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        const value = line.slice(eq + 1).trim();
+        if (key === "out_time_us" || key === "out_time_ms") {
+          const us = Number(value);
+          if (Number.isFinite(us) && onProgressTime) onProgressTime(us / 1_000_000);
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 6000) stderr = stderr.slice(-6000);
+    });
+
+    child.on("error", (error) => {
+      activeTrimChild = null;
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      activeTrimChild = null;
+      if (signal) {
+        reject(new Error(`Trim canceled (${signal})`));
+        return;
+      }
+      if (code === 0) {
+        resolve();
+      } else {
+        const detail = stderr.split("\n").filter(Boolean).slice(-4).join(" ");
+        reject(new Error(detail || `ffmpeg exited with code ${code}.`));
+      }
+    });
+  });
+}
+
+async function runTrimAccurate(input, output, deleteRanges, totalKept, item) {
+  const expr = `not(${deleteRanges
+    .map(([a, b]) => `between(t,${a.toFixed(3)},${b.toFixed(3)})`)
+    .join("+")})`;
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-nostats",
+    "-progress",
+    "pipe:1",
+    "-i",
+    input,
+    "-vf",
+    `select='${expr}',setpts=N/FRAME_RATE/TB`,
+    "-af",
+    `aselect='${expr}',asetpts=N/SR/TB`,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-movflags",
+    "+faststart",
+    output,
+  ];
+  await spawnTrimFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("trim:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: totalKept,
+      });
+    },
+  });
+}
+
+async function runTrimFast(input, output, keepRanges, item) {
+  const tempDir = `${output}.trim-tmp`;
+  await fs.promises.rm(tempDir, { recursive: true, force: true });
+  await fs.promises.mkdir(tempDir, { recursive: true });
+
+  try {
+    const segPaths = [];
+    for (let i = 0; i < keepRanges.length; i++) {
+      const [start, end] = keepRanges[i];
+      const segPath = path.join(tempDir, `seg_${String(i).padStart(4, "0")}.mp4`);
+      send("trim:progress", {
+        id: item.id,
+        phase: "extracting",
+        segmentIndex: i,
+        totalSegments: keepRanges.length,
+      });
+      await spawnTrimFfmpeg([
+        "-hide_banner",
+        "-y",
+        "-nostats",
+        "-ss",
+        start.toFixed(3),
+        "-to",
+        end.toFixed(3),
+        "-i",
+        input,
+        "-c",
+        "copy",
+        "-avoid_negative_ts",
+        "make_zero",
+        segPath,
+      ]);
+      segPaths.push(segPath);
+    }
+
+    const listPath = path.join(tempDir, "list.txt");
+    const listText = segPaths
+      .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+      .join("\n");
+    await fs.promises.writeFile(listPath, listText);
+
+    send("trim:progress", { id: item.id, phase: "concatenating" });
+    await spawnTrimFfmpeg([
+      "-hide_banner",
+      "-y",
+      "-nostats",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      output,
+    ]);
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 ipcMain.handle("scan:start", async (_event, url) => startScan(url));
 
 ipcMain.handle("scan:stop", async () => {
@@ -1324,6 +1578,108 @@ ipcMain.handle("download:start", async (_event, item) => {
 
 ipcMain.handle("file:show", async (_event, filePath) => {
   if (filePath) shell.showItemInFolder(filePath);
+  return { ok: true };
+});
+
+ipcMain.handle("trim:pickInput", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Pick a video file",
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Video",
+        extensions: ["mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts", "m4s"],
+      },
+    ],
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const filePath = result.filePaths[0];
+  try {
+    const [stat, duration] = await Promise.all([
+      fs.promises.stat(filePath),
+      probeDuration(filePath),
+    ]);
+    return {
+      filePath,
+      fileName: path.basename(filePath),
+      size: stat.size,
+      duration,
+    };
+  } catch (error) {
+    logEvent("error", "Probe failed", { filePath, error: error.message });
+    return { error: error.message };
+  }
+});
+
+ipcMain.handle("trim:pickOutput", async (_event, suggestedName) => {
+  const defaultPath = path.join(
+    app.getPath("downloads"),
+    suggestedName || `trimmed-${Date.now()}.mp4`
+  );
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Save trimmed video",
+    defaultPath,
+    filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  return { filePath: result.filePath };
+});
+
+ipcMain.handle("trim:run", async (_event, options) => {
+  const { input, output, ranges, mode, duration } = options || {};
+  if (!input || !output) throw new Error("Input and output paths are required.");
+  if (!Array.isArray(ranges) || ranges.length === 0) {
+    throw new Error("At least one delete range is required.");
+  }
+
+  const totalDuration = Number(duration) > 0 ? Number(duration) : await probeDuration(input);
+  const deleteRanges = normalizeDeleteRanges(ranges, totalDuration);
+  if (deleteRanges.length === 0) {
+    throw new Error("No valid delete ranges after parsing.");
+  }
+  const keepRanges = computeKeepRanges(deleteRanges, totalDuration);
+  if (keepRanges.length === 0) {
+    throw new Error("Delete ranges cover the entire video; nothing left to keep.");
+  }
+  const totalKept = keepRanges.reduce((acc, [a, b]) => acc + (b - a), 0);
+
+  const item = { id: `trim-${Date.now()}` };
+  logEvent("info", "Trim starting", {
+    input,
+    output,
+    mode,
+    totalDuration,
+    totalKept,
+    deleteRanges: deleteRanges.map(([a, b]) => `${formatTimecode(a)}-${formatTimecode(b)}`),
+    keepRanges: keepRanges.map(([a, b]) => `${formatTimecode(a)}-${formatTimecode(b)}`),
+  });
+  send("trim:status", { id: item.id, state: "running", mode, totalKept });
+
+  try {
+    if (mode === "fast") {
+      await runTrimFast(input, output, keepRanges, item);
+    } else {
+      await runTrimAccurate(input, output, deleteRanges, totalKept, item);
+    }
+    const stat = await fs.promises.stat(output);
+    if (stat.size < 1024) {
+      throw new Error(`Output looks too small (${stat.size} bytes).`);
+    }
+    send("trim:status", { id: item.id, state: "done", filePath: output });
+    logEvent("info", "Trim completed", { output, size: stat.size });
+    return { ok: true, filePath: output, size: stat.size, totalKept };
+  } catch (error) {
+    await fs.promises.rm(output, { force: true });
+    send("trim:status", { id: item.id, state: "error", message: error.message });
+    logEvent("error", "Trim failed", { error: error.message });
+    throw error;
+  }
+});
+
+ipcMain.handle("trim:cancel", async () => {
+  if (activeTrimChild && !activeTrimChild.killed) {
+    activeTrimChild.kill("SIGKILL");
+  }
   return { ok: true };
 });
 

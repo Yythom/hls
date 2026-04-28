@@ -23,4 +23,14 @@ contextBridge.exposeInMainWorld("videoFinder", {
   onAppLog: (callback) => {
     ipcRenderer.on("app:log", (_event, payload) => callback(payload));
   },
+  trimPickInput: () => ipcRenderer.invoke("trim:pickInput"),
+  trimPickOutput: (suggestedName) => ipcRenderer.invoke("trim:pickOutput", suggestedName),
+  trimRun: (options) => ipcRenderer.invoke("trim:run", options),
+  trimCancel: () => ipcRenderer.invoke("trim:cancel"),
+  onTrimProgress: (callback) => {
+    ipcRenderer.on("trim:progress", (_event, payload) => callback(payload));
+  },
+  onTrimStatus: (callback) => {
+    ipcRenderer.on("trim:status", (_event, payload) => callback(payload));
+  },
 });

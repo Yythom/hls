@@ -18,66 +18,136 @@
         </div>
       </header>
 
-      <section class="search-band">
-        <form id="scanForm" class="scan-form">
-          <input
-            id="urlInput"
-            type="url"
-            inputmode="url"
-            placeholder="https://example.com/page"
-            autocomplete="url"
-            required
-          />
-          <button id="scanButton" type="submit">Scan</button>
-        </form>
-      </section>
+      <nav class="tabs" role="tablist">
+        <button class="tab is-active" type="button" data-tab="scan" role="tab">Scan &amp; Download</button>
+        <button class="tab" type="button" data-tab="trim" role="tab">Trim Video</button>
+      </nav>
 
-      <section class="workspace">
-        <aside class="summary-panel">
-          <div class="metric">
-            <span>Found</span>
-            <strong id="foundCount">0</strong>
-          </div>
-          <div class="metric">
-            <span>Direct</span>
-            <strong id="directCount">0</strong>
-          </div>
-          <div class="metric">
-            <span>Streams</span>
-            <strong id="streamCount">0</strong>
-          </div>
-          <div class="download-box">
-            <span>Download</span>
-            <strong id="downloadState">Idle</strong>
-            <div class="progress">
-              <div id="progressBar"></div>
-            </div>
-          </div>
-          <div class="log-panel">
-            <div class="log-header">
-              <span>Logs</span>
-              <button id="clearLogsButton" class="tiny-button" type="button">Clear</button>
-            </div>
-            <div id="logList" class="log-list" aria-live="polite"></div>
-          </div>
-        </aside>
-
-        <section class="results-panel">
-          <div class="results-header">
-            <h2>Resources</h2>
-            <select id="kindFilter" aria-label="Filter resources">
-              <option value="all">All</option>
-              <option value="direct">Direct files</option>
-              <option value="streams">Streams</option>
-            </select>
-          </div>
-          <div id="emptyState" class="empty-state">
-            <strong>No resources yet</strong>
-            <span>Enter a page URL and scan.</span>
-          </div>
-          <div id="results" class="results"></div>
+      <div class="tab-panel" data-panel="scan">
+        <section class="search-band">
+          <form id="scanForm" class="scan-form">
+            <input
+              id="urlInput"
+              type="url"
+              inputmode="url"
+              placeholder="https://example.com/page"
+              autocomplete="url"
+              required
+            />
+            <button id="scanButton" type="submit">Scan</button>
+          </form>
         </section>
-      </section>
+
+        <section class="workspace">
+          <aside class="summary-panel">
+            <div class="metric">
+              <span>Found</span>
+              <strong id="foundCount">0</strong>
+            </div>
+            <div class="metric">
+              <span>Direct</span>
+              <strong id="directCount">0</strong>
+            </div>
+            <div class="metric">
+              <span>Streams</span>
+              <strong id="streamCount">0</strong>
+            </div>
+            <div class="download-box">
+              <span>Download</span>
+              <strong id="downloadState">Idle</strong>
+              <div class="progress">
+                <div id="progressBar"></div>
+              </div>
+            </div>
+            <div class="log-panel">
+              <div class="log-header">
+                <span>Logs</span>
+                <button id="clearLogsButton" class="tiny-button" type="button">Clear</button>
+              </div>
+              <div id="logList" class="log-list" aria-live="polite"></div>
+            </div>
+          </aside>
+
+          <section class="results-panel">
+            <div class="results-header">
+              <h2>Resources</h2>
+              <select id="kindFilter" aria-label="Filter resources">
+                <option value="all">All</option>
+                <option value="direct">Direct files</option>
+                <option value="streams">Streams</option>
+              </select>
+            </div>
+            <div id="emptyState" class="empty-state">
+              <strong>No resources yet</strong>
+              <span>Enter a page URL and scan.</span>
+            </div>
+            <div id="results" class="results"></div>
+          </section>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="trim" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>Source video</label>
+              <div class="trim-row-body">
+                <button id="trimPickInput" type="button">Pick file…</button>
+                <span id="trimInputName" class="trim-muted">No file selected</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>Duration</label>
+              <div class="trim-row-body">
+                <span id="trimDuration" class="trim-muted">--:--:--</span>
+              </div>
+            </div>
+
+            <div class="trim-section">
+              <div class="trim-section-head">
+                <h3>Delete ranges</h3>
+                <button id="trimAddRange" type="button" class="tiny-button">+ Add range</button>
+              </div>
+              <div id="trimRanges" class="trim-ranges"></div>
+              <p class="trim-help">
+                Time format: <code>90</code> (seconds), <code>1:30</code> (m:s), or <code>1:30:45.500</code> (h:m:s.ms).
+              </p>
+            </div>
+
+            <div class="trim-row">
+              <label>Mode</label>
+              <div class="trim-row-body">
+                <select id="trimMode">
+                  <option value="accurate">Accurate (re-encode, frame-precise)</option>
+                  <option value="fast">Fast (stream copy, snaps to keyframes)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>Output</label>
+              <div class="trim-row-body">
+                <button id="trimPickOutput" type="button">Save as…</button>
+                <span id="trimOutputName" class="trim-muted">Not chosen</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="trimRun" type="button">Trim</button>
+              <button id="trimCancel" type="button" class="secondary" disabled>Cancel</button>
+              <button id="trimReveal" type="button" class="secondary" hidden>Show file</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="trimState">Idle</span>
+              <div class="progress">
+                <div id="trimProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script src="./renderer.js"></script>

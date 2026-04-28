@@ -14,11 +14,35 @@ const kindFilter = document.querySelector("#kindFilter");
 const logList = document.querySelector("#logList");
 const clearLogsButton = document.querySelector("#clearLogsButton");
 
+const trimPickInput = document.querySelector("#trimPickInput");
+const trimInputName = document.querySelector("#trimInputName");
+const trimDuration = document.querySelector("#trimDuration");
+const trimAddRange = document.querySelector("#trimAddRange");
+const trimRangesEl = document.querySelector("#trimRanges");
+const trimMode = document.querySelector("#trimMode");
+const trimPickOutput = document.querySelector("#trimPickOutput");
+const trimOutputName = document.querySelector("#trimOutputName");
+const trimRun = document.querySelector("#trimRun");
+const trimCancel = document.querySelector("#trimCancel");
+const trimReveal = document.querySelector("#trimReveal");
+const trimState = document.querySelector("#trimState");
+const trimProgress = document.querySelector("#trimProgress");
+
+const tabs = document.querySelectorAll(".tab");
+const tabPanels = document.querySelectorAll(".tab-panel");
+
 const state = {
   items: new Map(),
   downloads: new Map(),
   scanning: false,
   logs: [],
+};
+
+const trimStateData = {
+  input: null,
+  output: null,
+  duration: 0,
+  running: false,
 };
 
 function isStream(item) {
@@ -35,6 +59,16 @@ function formatBytes(bytes) {
     unitIndex += 1;
   }
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatDurationDisplay(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "--:--:--";
+  const total = Math.floor(seconds);
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
 function setScanning(scanning) {
@@ -307,3 +341,191 @@ window.videoFinder.onLog((entry) => {
 });
 
 setScanning(false);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tabs
+// ─────────────────────────────────────────────────────────────────────────────
+
+tabs.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const target = btn.dataset.tab;
+    tabs.forEach((b) => b.classList.toggle("is-active", b === btn));
+    tabPanels.forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== target;
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trim
+// ─────────────────────────────────────────────────────────────────────────────
+
+function addRangeRow(start = "", end = "") {
+  const row = document.createElement("div");
+  row.className = "trim-range";
+
+  const startInput = document.createElement("input");
+  startInput.type = "text";
+  startInput.placeholder = "Start (e.g. 1:30)";
+  startInput.value = start;
+  startInput.dataset.role = "start";
+
+  const dash = document.createElement("span");
+  dash.className = "trim-dash";
+  dash.textContent = "—";
+
+  const endInput = document.createElement("input");
+  endInput.type = "text";
+  endInput.placeholder = "End (e.g. 1:45)";
+  endInput.value = end;
+  endInput.dataset.role = "end";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "tiny-button";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    row.remove();
+    if (trimRangesEl.children.length === 0) addRangeRow();
+  });
+
+  row.append(startInput, dash, endInput, remove);
+  trimRangesEl.append(row);
+}
+
+function getRanges() {
+  return Array.from(trimRangesEl.querySelectorAll(".trim-range"))
+    .map((row) => {
+      const start = row.querySelector('[data-role="start"]').value.trim();
+      const end = row.querySelector('[data-role="end"]').value.trim();
+      return { start, end };
+    })
+    .filter(({ start, end }) => start !== "" || end !== "");
+}
+
+function setTrimRunning(running) {
+  trimStateData.running = running;
+  trimRun.disabled = running;
+  trimCancel.disabled = !running;
+  trimPickInput.disabled = running;
+  trimPickOutput.disabled = running;
+  trimAddRange.disabled = running;
+  trimMode.disabled = running;
+}
+
+function suggestOutputName(inputName) {
+  if (!inputName) return null;
+  const dot = inputName.lastIndexOf(".");
+  const stem = dot > 0 ? inputName.slice(0, dot) : inputName;
+  return `${stem}_trimmed.mp4`;
+}
+
+trimPickInput.addEventListener("click", async () => {
+  const result = await window.videoFinder.trimPickInput();
+  if (!result || result.canceled) return;
+  if (result.error) {
+    trimState.textContent = result.error;
+    return;
+  }
+  trimStateData.input = result.filePath;
+  trimStateData.duration = result.duration;
+  trimInputName.textContent = `${result.fileName} · ${formatBytes(result.size)}`;
+  trimDuration.textContent = `${formatDurationDisplay(result.duration)} (${result.duration.toFixed(2)}s)`;
+  trimState.textContent = "Ready";
+  trimProgress.style.width = "0%";
+  trimReveal.hidden = true;
+});
+
+trimPickOutput.addEventListener("click", async () => {
+  const suggested = suggestOutputName(trimInputName.textContent.split(" · ")[0]);
+  const result = await window.videoFinder.trimPickOutput(suggested);
+  if (!result || result.canceled) return;
+  trimStateData.output = result.filePath;
+  trimOutputName.textContent = result.filePath;
+});
+
+trimAddRange.addEventListener("click", () => addRangeRow());
+
+trimRun.addEventListener("click", async () => {
+  if (!trimStateData.input) {
+    trimState.textContent = "Pick a source video first";
+    return;
+  }
+  if (!trimStateData.output) {
+    trimState.textContent = "Choose an output location first";
+    return;
+  }
+  const ranges = getRanges();
+  if (ranges.length === 0) {
+    trimState.textContent = "Add at least one delete range";
+    return;
+  }
+
+  setTrimRunning(true);
+  trimState.textContent = "Starting";
+  trimProgress.style.width = "0%";
+  trimReveal.hidden = true;
+
+  try {
+    const result = await window.videoFinder.trimRun({
+      input: trimStateData.input,
+      output: trimStateData.output,
+      ranges,
+      mode: trimMode.value,
+      duration: trimStateData.duration,
+    });
+    trimState.textContent = `Done · ${formatBytes(result.size)} · kept ${result.totalKept.toFixed(2)}s`;
+    trimProgress.style.width = "100%";
+    trimReveal.hidden = false;
+  } catch (error) {
+    trimState.textContent = `Failed: ${error.message}`;
+  } finally {
+    setTrimRunning(false);
+  }
+});
+
+trimCancel.addEventListener("click", async () => {
+  await window.videoFinder.trimCancel();
+  trimState.textContent = "Canceling…";
+});
+
+trimReveal.addEventListener("click", async () => {
+  if (trimStateData.output) await window.videoFinder.showFile(trimStateData.output);
+});
+
+window.videoFinder.onTrimProgress((payload) => {
+  if (payload.phase === "encoding") {
+    if (payload.total > 0) {
+      const percent = Math.min((payload.elapsed / payload.total) * 100, 100);
+      trimProgress.style.width = `${percent}%`;
+      trimState.textContent = `Encoding ${formatDurationDisplay(payload.elapsed)} / ${formatDurationDisplay(
+        payload.total
+      )} (${percent.toFixed(0)}%)`;
+    } else {
+      trimState.textContent = `Encoding ${formatDurationDisplay(payload.elapsed)}`;
+    }
+    return;
+  }
+  if (payload.phase === "extracting") {
+    const percent = ((payload.segmentIndex + 1) / payload.totalSegments) * 100;
+    trimProgress.style.width = `${percent}%`;
+    trimState.textContent = `Extracting segment ${payload.segmentIndex + 1} / ${payload.totalSegments}`;
+    return;
+  }
+  if (payload.phase === "concatenating") {
+    trimProgress.style.width = "95%";
+    trimState.textContent = "Merging segments";
+  }
+});
+
+window.videoFinder.onTrimStatus((payload) => {
+  if (payload.state === "running") {
+    trimState.textContent = `Running (${payload.mode})`;
+  } else if (payload.state === "done") {
+    trimState.textContent = "Done";
+  } else if (payload.state === "error") {
+    trimState.textContent = payload.message || "Failed";
+  }
+});
+
+addRangeRow();
