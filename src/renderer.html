@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Video Finder</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Video Finder</h1>
+          <p id="scanStatus">Ready</p>
+        </div>
+        <div class="actions">
+          <button id="stopButton" class="secondary" type="button">Stop</button>
+        </div>
+      </header>
+
+      <section class="search-band">
+        <form id="scanForm" class="scan-form">
+          <input
+            id="urlInput"
+            type="url"
+            inputmode="url"
+            placeholder="https://example.com/page"
+            autocomplete="url"
+            required
+          />
+          <button id="scanButton" type="submit">Scan</button>
+        </form>
+      </section>
+
+      <section class="workspace">
+        <aside class="summary-panel">
+          <div class="metric">
+            <span>Found</span>
+            <strong id="foundCount">0</strong>
+          </div>
+          <div class="metric">
+            <span>Direct</span>
+            <strong id="directCount">0</strong>
+          </div>
+          <div class="metric">
+            <span>Streams</span>
+            <strong id="streamCount">0</strong>
+          </div>
+          <div class="download-box">
+            <span>Download</span>
+            <strong id="downloadState">Idle</strong>
+            <div class="progress">
+              <div id="progressBar"></div>
+            </div>
+          </div>
+          <div class="log-panel">
+            <div class="log-header">
+              <span>Logs</span>
+              <button id="clearLogsButton" class="tiny-button" type="button">Clear</button>
+            </div>
+            <div id="logList" class="log-list" aria-live="polite"></div>
+          </div>
+        </aside>
+
+        <section class="results-panel">
+          <div class="results-header">
+            <h2>Resources</h2>
+            <select id="kindFilter" aria-label="Filter resources">
+              <option value="all">All</option>
+              <option value="direct">Direct files</option>
+              <option value="streams">Streams</option>
+            </select>
+          </div>
+          <div id="emptyState" class="empty-state">
+            <strong>No resources yet</strong>
+            <span>Enter a page URL and scan.</span>
+          </div>
+          <div id="results" class="results"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
