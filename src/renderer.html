@@ -14,13 +14,19 @@
           <p id="scanStatus">Ready</p>
         </div>
         <div class="actions">
-          <button id="stopButton" class="secondary" type="button">Stop</button>
+          <button id="stopButton" class="secondary" type="button">停止</button>
         </div>
       </header>
 
       <nav class="tabs" role="tablist">
-        <button class="tab is-active" type="button" data-tab="scan" role="tab">Scan &amp; Download</button>
-        <button class="tab" type="button" data-tab="trim" role="tab">Trim Video</button>
+        <button class="tab is-active" type="button" data-tab="scan" role="tab">扫描下载</button>
+        <button class="tab" type="button" data-tab="trim" role="tab">视频裁剪</button>
+        <button class="tab" type="button" data-tab="audio" role="tab">音频提取</button>
+        <button class="tab" type="button" data-tab="convert" role="tab">格式转换</button>
+        <button class="tab" type="button" data-tab="gif" role="tab">转 GIF</button>
+        <button class="tab" type="button" data-tab="concat" role="tab">视频拼接</button>
+        <button class="tab" type="button" data-tab="info" role="tab">媒体信息</button>
+        <button class="tab" type="button" data-tab="online" role="tab">在线视频</button>
       </nav>
 
       <div class="tab-panel" data-panel="scan">
@@ -34,7 +40,7 @@
               autocomplete="url"
               required
             />
-            <button id="scanButton" type="submit">Scan</button>
+            <button id="scanButton" type="submit">扫描</button>
           </form>
         </section>
 
@@ -62,7 +68,7 @@
             <div class="log-panel">
               <div class="log-header">
                 <span>Logs</span>
-                <button id="clearLogsButton" class="tiny-button" type="button">Clear</button>
+                <button id="clearLogsButton" class="tiny-button" type="button">清空</button>
               </div>
               <div id="logList" class="log-list" aria-live="polite"></div>
             </div>
@@ -92,7 +98,7 @@
             <div class="trim-row">
               <label>Source video</label>
               <div class="trim-row-body">
-                <button id="trimPickInput" type="button">Pick file…</button>
+                <button id="trimPickInput" type="button">选择文件…</button>
                 <span id="trimInputName" class="trim-muted">No file selected</span>
               </div>
             </div>
@@ -107,7 +113,7 @@
             <div class="trim-section">
               <div class="trim-section-head">
                 <h3>Delete ranges</h3>
-                <button id="trimAddRange" type="button" class="tiny-button">+ Add range</button>
+                <button id="trimAddRange" type="button" class="tiny-button">+ 添加片段</button>
               </div>
               <div id="trimRanges" class="trim-ranges"></div>
               <p class="trim-help">
@@ -128,15 +134,15 @@
             <div class="trim-row">
               <label>Output</label>
               <div class="trim-row-body">
-                <button id="trimPickOutput" type="button">Save as…</button>
+                <button id="trimPickOutput" type="button">另存为…</button>
                 <span id="trimOutputName" class="trim-muted">Not chosen</span>
               </div>
             </div>
 
             <div class="trim-actions">
-              <button id="trimRun" type="button">Trim</button>
-              <button id="trimCancel" type="button" class="secondary" disabled>Cancel</button>
-              <button id="trimReveal" type="button" class="secondary" hidden>Show file</button>
+              <button id="trimRun" type="button">开始裁剪</button>
+              <button id="trimCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="trimReveal" type="button" class="secondary" hidden>打开文件位置</button>
             </div>
 
             <div class="trim-status">
@@ -144,6 +150,404 @@
               <div class="progress">
                 <div id="trimProgress"></div>
               </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="audio" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源视频</label>
+              <div class="trim-row-body">
+                <button id="audioPickInput" type="button">选择文件…</button>
+                <span id="audioInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出格式</label>
+              <div class="trim-row-body">
+                <select id="audioFormat">
+                  <option value="mp3">MP3（192k）</option>
+                  <option value="aac">AAC / M4A（192k）</option>
+                  <option value="wav">WAV（无损）</option>
+                  <option value="flac">FLAC（无损压缩）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="audioPickOutput" type="button">另存为…</button>
+                <span id="audioOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="audioRun" type="button">开始提取</button>
+              <button id="audioCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="audioReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="audioState">Idle</span>
+              <div class="progress">
+                <div id="audioProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="convert" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源视频</label>
+              <div class="trim-row-body">
+                <button id="convertPickInput" type="button">选择文件…</button>
+                <span id="convertInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出格式</label>
+              <div class="trim-row-body">
+                <select id="convertFormat">
+                  <option value="mp4">MP4</option>
+                  <option value="mov">MOV</option>
+                  <option value="mkv">MKV</option>
+                  <option value="webm">WebM</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>模式</label>
+              <div class="trim-row-body">
+                <select id="convertMode">
+                  <option value="encode">重新编码（兼容性好，慢）</option>
+                  <option value="copy">直接封装（快，仅当编码兼容时可用）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>分辨率</label>
+              <div class="trim-row-body">
+                <select id="convertScale">
+                  <option value="source">保持原始</option>
+                  <option value="1920">1080p（宽 1920）</option>
+                  <option value="1280">720p（宽 1280）</option>
+                  <option value="854">480p（宽 854）</option>
+                  <option value="640">360p（宽 640）</option>
+                </select>
+                <span class="trim-muted">仅在重新编码时生效</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="convertPickOutput" type="button">另存为…</button>
+                <span id="convertOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="convertRun" type="button">开始转换</button>
+              <button id="convertCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="convertReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="convertState">Idle</span>
+              <div class="progress">
+                <div id="convertProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="gif" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源视频</label>
+              <div class="trim-row-body">
+                <button id="gifPickInput" type="button">选择文件…</button>
+                <span id="gifInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>开始时间</label>
+              <div class="trim-row-body">
+                <input id="gifStart" type="text" placeholder="例如 0、1:30 或 0:00:05.5" value="0" />
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>持续时长</label>
+              <div class="trim-row-body">
+                <input id="gifDuration" type="text" placeholder="例如 5（秒）；留空为到结尾" />
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>帧率</label>
+              <div class="trim-row-body">
+                <select id="gifFps">
+                  <option value="10">10 fps（小）</option>
+                  <option value="15" selected>15 fps（推荐）</option>
+                  <option value="20">20 fps</option>
+                  <option value="24">24 fps（流畅）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>宽度</label>
+              <div class="trim-row-body">
+                <select id="gifWidth">
+                  <option value="320">320px</option>
+                  <option value="480" selected>480px</option>
+                  <option value="640">640px</option>
+                  <option value="800">800px</option>
+                </select>
+                <span class="trim-muted">高度按比例自动计算</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="gifPickOutput" type="button">另存为…</button>
+                <span id="gifOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="gifRun" type="button">开始转换</button>
+              <button id="gifCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="gifReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="gifState">Idle</span>
+              <div class="progress">
+                <div id="gifProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="concat" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>视频列表</label>
+              <div class="trim-row-body">
+                <button id="concatAdd" type="button">添加视频…</button>
+                <button id="concatClear" type="button" class="secondary">清空</button>
+                <span class="trim-muted">按列表顺序拼接</span>
+              </div>
+            </div>
+
+            <div id="concatList" class="trim-ranges"></div>
+
+            <div class="trim-row">
+              <label>模式</label>
+              <div class="trim-row-body">
+                <select id="concatMode">
+                  <option value="copy">直接拼接（快，要求编码/分辨率一致）</option>
+                  <option value="encode">重新编码（慢，兼容不同来源）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="concatPickOutput" type="button">另存为…</button>
+                <span id="concatOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="concatRun" type="button">开始拼接</button>
+              <button id="concatCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="concatReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="concatState">Idle</span>
+              <div class="progress">
+                <div id="concatProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="tab-panel" data-panel="online" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>视频链接</label>
+              <div class="trim-row-body">
+                <input
+                  id="onlineUrl"
+                  type="url"
+                  placeholder="支持 B 站 / YouTube / 抖音 / Twitter 等（粘贴页面 URL）"
+                  style="flex:1; min-width:0; border:1px solid #cfd2cc; border-radius:8px; padding:8px 10px; background:#fff; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+                />
+                <button id="onlineFetch" type="button">解析</button>
+              </div>
+            </div>
+
+            <div id="onlineMeta" class="online-meta" hidden>
+              <img id="onlineThumb" alt="" />
+              <div class="online-meta-text">
+                <strong id="onlineTitle"></strong>
+                <span id="onlineSubtitle" class="trim-muted"></span>
+              </div>
+            </div>
+
+            <div class="trim-section" id="onlineFormatsBox" hidden>
+              <div class="trim-section-head">
+                <h3>格式</h3>
+                <select id="onlineKindFilter">
+                  <option value="combined">合并（视频+音频，推荐）</option>
+                  <option value="video">仅视频</option>
+                  <option value="audio">仅音频</option>
+                  <option value="all">全部</option>
+                </select>
+              </div>
+              <div id="onlineFormats" class="online-formats"></div>
+              <p class="trim-help">
+                选择「合并」可让 yt-dlp 自动选最佳画质 + 最佳音频并合成 MP4。其他选项可手动指定单个流。
+              </p>
+            </div>
+
+            <div class="trim-row">
+              <label>登录 Cookie</label>
+              <div class="trim-row-body">
+                <select id="onlineCookies">
+                  <option value="">不使用（未登录）</option>
+                  <option value="chrome">Chrome</option>
+                  <option value="edge">Edge</option>
+                  <option value="firefox">Firefox</option>
+                  <option value="safari">Safari</option>
+                  <option value="brave">Brave</option>
+                  <option value="chromium">Chromium</option>
+                  <option value="opera">Opera</option>
+                  <option value="vivaldi">Vivaldi</option>
+                </select>
+                <span class="trim-muted">B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>并发分片</label>
+              <div class="trim-row-body">
+                <select id="onlineConcurrency">
+                  <option value="1">1（单线程）</option>
+                  <option value="4">4</option>
+                  <option value="8" selected>8（推荐）</option>
+                  <option value="16">16</option>
+                  <option value="32">32</option>
+                </select>
+                <span class="trim-muted">HLS/DASH 分片并行下载数</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="onlinePickOutput" type="button">另存为…</button>
+                <span id="onlineOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="onlineRun" type="button">开始下载</button>
+              <button id="onlineCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="onlineReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="onlineState">Idle</span>
+              <div class="progress">
+                <div id="onlineProgress"></div>
+              </div>
+            </div>
+
+            <p class="trim-help">
+              已内置 <code>yt-dlp</code>。如需自定义版本，可设置 <code>YT_DLP_PATH</code> 环境变量后启动 App。
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="info" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>媒体文件</label>
+              <div class="trim-row-body">
+                <button id="infoPickInput" type="button">选择文件…</button>
+                <button id="infoReveal" type="button" class="secondary" hidden>打开文件位置</button>
+                <span id="infoInputName" class="trim-muted">未选择文件（或拖拽至此）</span>
+              </div>
+            </div>
+
+            <div id="infoDropZone" class="info-drop">
+              拖拽视频 / 音频 / GIF 文件到这里查看信息
+            </div>
+
+            <div id="infoState" class="trim-muted">Idle</div>
+
+            <div id="infoResult" class="info-result" hidden>
+              <section class="info-section">
+                <h3>概览</h3>
+                <dl id="infoOverview" class="info-grid"></dl>
+              </section>
+
+              <section class="info-section" data-section="video" hidden>
+                <h3>视频流</h3>
+                <div id="infoVideoList" class="info-stream-list"></div>
+              </section>
+
+              <section class="info-section" data-section="audio" hidden>
+                <h3>音频流</h3>
+                <div id="infoAudioList" class="info-stream-list"></div>
+              </section>
+
+              <section class="info-section" data-section="other" hidden>
+                <h3>其他流</h3>
+                <div id="infoOtherList" class="info-stream-list"></div>
+              </section>
+
+              <section class="info-section" data-section="meta" hidden>
+                <h3>元数据</h3>
+                <dl id="infoMetadata" class="info-grid"></dl>
+              </section>
+
+              <section class="info-section">
+                <div class="trim-section-head">
+                  <h3>原始输出</h3>
+                  <div style="display:flex; gap:8px;">
+                    <button id="infoCopyJson" type="button" class="tiny-button">复制 JSON</button>
+                    <button id="infoToggleRaw" type="button" class="tiny-button">展开</button>
+                  </div>
+                </div>
+                <pre id="infoRaw" class="info-raw" hidden></pre>
+              </section>
             </div>
           </div>
         </section>

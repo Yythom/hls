@@ -395,7 +395,37 @@ button.secondary:hover {
   grid-column: 2;
   grid-row: 1 / span 3;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.resource-thumb {
+  grid-column: 1 / -1;
+  display: flex;
   align-items: center;
+  justify-content: flex-start;
+  margin-top: 4px;
+  min-height: 32px;
+}
+
+.resource-thumb img {
+  max-width: 320px;
+  max-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #000;
+}
+
+.resource-thumb-loading,
+.resource-thumb-error {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resource-thumb-error {
+  color: #b04545;
 }
 
 .tabs {
@@ -563,6 +593,198 @@ button.secondary:hover {
 .trim-status #trimState {
   color: var(--ink);
   font-weight: 600;
+}
+
+.online-meta {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.online-meta img {
+  width: 140px;
+  max-height: 90px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #000;
+}
+
+.online-meta-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.online-meta-text strong {
+  font-size: 14px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.online-formats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.online-format {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.online-format:hover {
+  border-color: var(--accent);
+}
+
+.online-format.is-auto {
+  background: rgba(13, 107, 99, 0.05);
+}
+
+.online-format-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.online-format-main strong {
+  color: var(--ink);
+}
+
+.online-format-main .trim-muted {
+  font-size: 12px;
+}
+
+.online-format-size {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.info-drop {
+  padding: 18px;
+  border: 1.5px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.info-drop.is-active {
+  border-color: var(--accent);
+  background: rgba(13, 107, 99, 0.06);
+  color: var(--accent-strong);
+}
+
+.info-result {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.info-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.info-section h3 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.info-grid dt {
+  color: var(--muted);
+}
+
+.info-grid dd {
+  margin: 0;
+  color: var(--ink);
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.info-grid dd.info-empty {
+  color: var(--muted);
+  font-family: inherit;
+}
+
+.info-stream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.info-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.info-stream-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.info-stream-raw {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.info-raw {
+  margin: 0;
+  padding: 12px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #1f2421;
+  color: #d8e1de;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 980px) {

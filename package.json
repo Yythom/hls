@@ -7,9 +7,11 @@
     "start": "electron .",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js",
     "fetch:ffmpeg": "node scripts/fetch-ffmpeg.js",
-    "predist": "npm run fetch:ffmpeg",
-    "predist:mac": "npm run fetch:ffmpeg",
-    "predist:win": "npm run fetch:ffmpeg",
+    "fetch:ytdlp": "node scripts/fetch-ytdlp.js",
+    "fetch:bins": "npm run fetch:ffmpeg && npm run fetch:ytdlp",
+    "predist": "npm run fetch:bins",
+    "predist:mac": "npm run fetch:bins",
+    "predist:win": "npm run fetch:bins",
     "dist": "rm -rf dist && electron-builder -mw",
     "dist:mac": "rm -rf dist && electron-builder --mac",
     "dist:win": "rm -rf dist && electron-builder --win"
@@ -55,6 +57,10 @@
         {
           "from": "resources/ffmpeg/darwin-${arch}/ffmpeg",
           "to": "ffmpeg"
+        },
+        {
+          "from": "resources/yt-dlp/darwin-${arch}/yt-dlp",
+          "to": "yt-dlp"
         }
       ]
     },
@@ -71,6 +77,10 @@
         {
           "from": "resources/ffmpeg/win32-x64/ffmpeg.exe",
           "to": "ffmpeg.exe"
+        },
+        {
+          "from": "resources/yt-dlp/win32-x64/yt-dlp.exe",
+          "to": "yt-dlp.exe"
         }
       ]
     },

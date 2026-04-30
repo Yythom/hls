@@ -269,6 +269,8 @@ async function startScan(rawUrl) {
     },
   });
 
+  scanWindow.webContents.setAudioMuted(true);
+
   const webContentsId = scanWindow.webContents.id;
   const scanSession = scanWindow.webContents.session;
   activeScanSession = scanSession;
@@ -1525,6 +1527,327 @@ async function runTrimFast(input, output, keepRanges, item) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Thumbnail preview
+// ─────────────────────────────────────────────────────────────────────────────
+
+const thumbnailCache = new Map();
+
+async function generateThumbnail(item) {
+  if (thumbnailCache.has(item.url)) return thumbnailCache.get(item.url);
+
+  const headerText = await ffmpegHeaders(item);
+  const dataUrl = await new Promise((resolve, reject) => {
+    const args = [
+      "-hide_banner",
+      "-nostats",
+      "-loglevel", "error",
+      "-headers", headerText,
+      "-ss", "1",
+      "-i", item.url,
+      "-frames:v", "1",
+      "-vf", "scale=320:-2",
+      "-q:v", "5",
+      "-f", "image2",
+      "-vcodec", "mjpeg",
+      "pipe:1",
+    ];
+    const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+    const chunks = [];
+    let stderr = "";
+    const timer = setTimeout(() => {
+      if (!child.killed) child.kill("SIGKILL");
+    }, 30000);
+
+    child.stdout.on("data", (c) => chunks.push(c));
+    child.stderr.on("data", (c) => {
+      stderr += c.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0 || chunks.length === 0) {
+        const detail = stderr.split("\n").filter(Boolean).slice(-2).join(" ");
+        reject(new Error(detail || `ffmpeg exited with code ${code}`));
+        return;
+      }
+      const buf = Buffer.concat(chunks);
+      resolve(`data:image/jpeg;base64,${buf.toString("base64")}`);
+    });
+  });
+
+  thumbnailCache.set(item.url, dataUrl);
+  return dataUrl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tools (audio extract / format convert / gif / concat)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let activeToolsChild = null;
+
+function spawnToolsFfmpeg(args, { onProgressTime } = {}) {
+  return new Promise((resolve, reject) => {
+    logEvent("debug", "Running tools ffmpeg", { args: safeFfmpegArgs(args) });
+    const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+    activeToolsChild = child;
+
+    let stderr = "";
+    let stdoutBuf = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdoutBuf += chunk.toString();
+      let idx;
+      while ((idx = stdoutBuf.indexOf("\n")) >= 0) {
+        const line = stdoutBuf.slice(0, idx);
+        stdoutBuf = stdoutBuf.slice(idx + 1);
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        const value = line.slice(eq + 1).trim();
+        if (key === "out_time_us" || key === "out_time_ms") {
+          const us = Number(value);
+          if (Number.isFinite(us) && onProgressTime) onProgressTime(us / 1_000_000);
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 6000) stderr = stderr.slice(-6000);
+    });
+
+    child.on("error", (error) => {
+      activeToolsChild = null;
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      activeToolsChild = null;
+      if (signal) {
+        reject(new Error(`Operation canceled (${signal})`));
+        return;
+      }
+      if (code === 0) {
+        resolve();
+      } else {
+        const detail = stderr.split("\n").filter(Boolean).slice(-4).join(" ");
+        reject(new Error(detail || `ffmpeg exited with code ${code}.`));
+      }
+    });
+  });
+}
+
+const AUDIO_PRESETS = {
+  mp3: { codec: "libmp3lame", bitrate: "192k", ext: "mp3" },
+  aac: { codec: "aac", bitrate: "192k", ext: "m4a" },
+  wav: { codec: "pcm_s16le", bitrate: null, ext: "wav" },
+  flac: { codec: "flac", bitrate: null, ext: "flac" },
+};
+
+async function runExtractAudio(input, output, options, item, totalDuration) {
+  const format = options?.format || "mp3";
+  const preset = AUDIO_PRESETS[format];
+  if (!preset) throw new Error(`Unsupported audio format: ${format}`);
+
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-nostats",
+    "-progress",
+    "pipe:1",
+    "-i",
+    input,
+    "-vn",
+    "-c:a",
+    preset.codec,
+  ];
+  if (preset.bitrate) args.push("-b:a", preset.bitrate);
+  args.push(output);
+
+  await spawnToolsFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: totalDuration,
+      });
+    },
+  });
+}
+
+async function runConvert(input, output, options, item, totalDuration) {
+  const mode = options?.mode === "copy" ? "copy" : "encode";
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-nostats",
+    "-progress",
+    "pipe:1",
+    "-i",
+    input,
+  ];
+
+  if (mode === "copy") {
+    args.push("-c", "copy");
+  } else {
+    const scale = options?.scale;
+    if (scale && scale !== "source") {
+      const w = Number(scale);
+      if (Number.isFinite(w) && w > 0) {
+        args.push("-vf", `scale=${w}:-2:flags=lanczos`);
+      }
+    }
+    args.push("-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p");
+    args.push("-c:a", "aac", "-b:a", "192k");
+  }
+
+  if (output.toLowerCase().endsWith(".mp4") || output.toLowerCase().endsWith(".mov")) {
+    args.push("-movflags", "+faststart");
+  }
+  args.push(output);
+
+  await spawnToolsFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: totalDuration,
+      });
+    },
+  });
+}
+
+async function runGif(input, output, options, item) {
+  const start = options?.start ? parseTimecode(options.start) : 0;
+  const duration = options?.duration ? parseTimecode(options.duration) : null;
+  const fps = Number(options?.fps) > 0 ? Number(options.fps) : 15;
+  const width = Number(options?.width) > 0 ? Number(options.width) : 480;
+
+  const args = ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1"];
+  if (start > 0) args.push("-ss", start.toFixed(3));
+  if (duration && duration > 0) args.push("-t", duration.toFixed(3));
+  args.push(
+    "-i",
+    input,
+    "-vf",
+    `fps=${fps},scale=${width}:-2:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
+    "-loop",
+    "0",
+    output
+  );
+
+  await spawnToolsFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: duration || 0,
+      });
+    },
+  });
+}
+
+async function runConcat(inputs, output, options, item) {
+  const mode = options?.mode === "encode" ? "encode" : "copy";
+
+  if (mode === "copy") {
+    const tempDir = `${output}.concat-tmp`;
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+    await fs.promises.mkdir(tempDir, { recursive: true });
+    try {
+      const listPath = path.join(tempDir, "list.txt");
+      const listText = inputs
+        .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+        .join("\n");
+      await fs.promises.writeFile(listPath, listText);
+
+      send("tools:progress", { id: item.id, phase: "concatenating" });
+      const args = [
+        "-hide_banner",
+        "-y",
+        "-nostats",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listPath,
+        "-c",
+        "copy",
+      ];
+      if (output.toLowerCase().endsWith(".mp4") || output.toLowerCase().endsWith(".mov")) {
+        args.push("-movflags", "+faststart");
+      }
+      args.push(output);
+      await spawnToolsFfmpeg(args);
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  // re-encode mode using concat filter
+  const args = ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1"];
+  for (const p of inputs) args.push("-i", p);
+  const filterParts = [];
+  for (let i = 0; i < inputs.length; i++) {
+    filterParts.push(`[${i}:v:0][${i}:a:0]`);
+  }
+  const filter = `${filterParts.join("")}concat=n=${inputs.length}:v=1:a=1[v][a]`;
+  args.push(
+    "-filter_complex",
+    filter,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k"
+  );
+  if (output.toLowerCase().endsWith(".mp4") || output.toLowerCase().endsWith(".mov")) {
+    args.push("-movflags", "+faststart");
+  }
+  args.push(output);
+
+  let totalDuration = 0;
+  for (const p of inputs) {
+    try {
+      totalDuration += await probeDuration(p);
+    } catch {
+      // ignore failed probes; progress will degrade
+    }
+  }
+
+  await spawnToolsFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: totalDuration,
+      });
+    },
+  });
+}
+
 ipcMain.handle("scan:start", async (_event, url) => startScan(url));
 
 ipcMain.handle("scan:stop", async () => {
@@ -1579,6 +1902,17 @@ ipcMain.handle("download:start", async (_event, item) => {
 ipcMain.handle("file:show", async (_event, filePath) => {
   if (filePath) shell.showItemInFolder(filePath);
   return { ok: true };
+});
+
+ipcMain.handle("thumbnail:generate", async (_event, item) => {
+  if (!item || !item.url) throw new Error("Item with URL is required.");
+  try {
+    const dataUrl = await generateThumbnail(item);
+    return { ok: true, dataUrl };
+  } catch (error) {
+    logEvent("warn", "Thumbnail failed", { url: item.url, error: error.message });
+    throw error;
+  }
 });
 
 ipcMain.handle("trim:pickInput", async () => {
@@ -1680,6 +2014,552 @@ ipcMain.handle("trim:cancel", async () => {
   if (activeTrimChild && !activeTrimChild.killed) {
     activeTrimChild.kill("SIGKILL");
   }
+  return { ok: true };
+});
+
+const VIDEO_EXTS = ["mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts", "m4s"];
+
+ipcMain.handle("tools:pickFile", async (_event, options) => {
+  const multi = !!options?.multi;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: options?.title || "选择文件",
+    properties: multi ? ["openFile", "multiSelections"] : ["openFile"],
+    filters: [{ name: "Video", extensions: VIDEO_EXTS }],
+  });
+  if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+
+  const files = await Promise.all(
+    result.filePaths.map(async (filePath) => {
+      try {
+        const [stat, duration] = await Promise.all([
+          fs.promises.stat(filePath),
+          probeDuration(filePath).catch(() => 0),
+        ]);
+        return {
+          filePath,
+          fileName: path.basename(filePath),
+          size: stat.size,
+          duration,
+        };
+      } catch (error) {
+        return { filePath, error: error.message };
+      }
+    })
+  );
+  return { files };
+});
+
+ipcMain.handle("tools:pickOutput", async (_event, options) => {
+  const suggested = options?.suggestedName || `output-${Date.now()}.${options?.ext || "mp4"}`;
+  const ext = options?.ext || "mp4";
+  const filters = options?.filters || [{ name: ext.toUpperCase(), extensions: [ext] }];
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options?.title || "保存为",
+    defaultPath: path.join(app.getPath("downloads"), suggested),
+    filters,
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  return { filePath: result.filePath };
+});
+
+ipcMain.handle("tools:run", async (_event, payload) => {
+  const { op, input, inputs, output, options } = payload || {};
+  if (!output) throw new Error("Output path is required.");
+
+  const item = { id: `tools-${op}-${Date.now()}` };
+  send("tools:status", { id: item.id, state: "running", op });
+  logEvent("info", "Tool starting", { op, output, options });
+
+  try {
+    let totalDuration = 0;
+    if (op !== "concat" && op !== "gif" && input) {
+      try {
+        totalDuration = await probeDuration(input);
+      } catch {
+        // probe is best-effort
+      }
+    }
+
+    if (op === "audio") {
+      if (!input) throw new Error("Input file is required.");
+      await runExtractAudio(input, output, options, item, totalDuration);
+    } else if (op === "convert") {
+      if (!input) throw new Error("Input file is required.");
+      await runConvert(input, output, options, item, totalDuration);
+    } else if (op === "gif") {
+      if (!input) throw new Error("Input file is required.");
+      await runGif(input, output, options, item);
+    } else if (op === "concat") {
+      if (!Array.isArray(inputs) || inputs.length < 2) {
+        throw new Error("At least two videos are required.");
+      }
+      await runConcat(inputs, output, options, item);
+    } else {
+      throw new Error(`Unknown operation: ${op}`);
+    }
+
+    const stat = await fs.promises.stat(output);
+    if (stat.size < 256) {
+      throw new Error(`Output looks too small (${stat.size} bytes).`);
+    }
+    send("tools:status", { id: item.id, state: "done", filePath: output });
+    logEvent("info", "Tool completed", { op, output, size: stat.size });
+    return { ok: true, filePath: output, size: stat.size };
+  } catch (error) {
+    await fs.promises.rm(output, { force: true }).catch(() => {});
+    send("tools:status", { id: item.id, state: "error", message: error.message });
+    logEvent("error", "Tool failed", { op, error: error.message });
+    throw error;
+  }
+});
+
+ipcMain.handle("tools:cancel", async () => {
+  if (activeToolsChild && !activeToolsChild.killed) {
+    activeToolsChild.kill("SIGKILL");
+  }
+  return { ok: true };
+});
+
+const INFO_EXTS = [
+  "mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts", "m4s",
+  "3gp", "mpg", "mpeg", "wmv", "ogv", "gif", "apng",
+  "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma",
+];
+
+function probeRawInfo(filePath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath(), ["-hide_banner", "-i", filePath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 200000) stderr = stderr.slice(-200000);
+    });
+    child.on("error", (error) => {
+      if (error.code === "ENOENT") {
+        reject(new Error("ffmpeg not found. Install ffmpeg or set FFMPEG_PATH."));
+      } else {
+        reject(error);
+      }
+    });
+    child.on("close", () => resolve(stderr));
+  });
+}
+
+function parseVideoStream(rest, item) {
+  const codecMatch = rest.match(/^([A-Za-z0-9_]+)/);
+  if (codecMatch) item.codec = codecMatch[1];
+  const profile = rest.match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)/);
+  if (profile) item.profile = profile[1];
+  const resMatch = rest.match(/(\b\d{2,5})x(\d{2,5})\b/);
+  if (resMatch) {
+    item.width = Number(resMatch[1]);
+    item.height = Number(resMatch[2]);
+  }
+  const dar = rest.match(/DAR\s+([\d:]+)/);
+  if (dar) item.dar = dar[1];
+  const fpsMatch = rest.match(/([\d.]+)\s+fps/);
+  if (fpsMatch) item.fps = Number(fpsMatch[1]);
+  const brMatch = rest.match(/(\d+)\s*kb\/s/);
+  if (brMatch) item.bitrate = Number(brMatch[1]);
+  const pixMatch = rest.match(/,\s*(yuv\w+|gbrp\w*|gray\w*|rgba?\w*|bgra?\w*|nv\d+\w*|pal8)\b/);
+  if (pixMatch) item.pixelFormat = pixMatch[1];
+}
+
+function parseAudioStream(rest, item) {
+  const codecMatch = rest.match(/^([A-Za-z0-9_]+)/);
+  if (codecMatch) item.codec = codecMatch[1];
+  const profile = rest.match(/^[A-Za-z0-9_]+\s*\(([^)]+)\)/);
+  if (profile) item.profile = profile[1];
+  const hzMatch = rest.match(/(\d+)\s*Hz/);
+  if (hzMatch) item.sampleRate = Number(hzMatch[1]);
+  const chMatch = rest.match(/Hz,\s*([^,]+?)(?:,|$)/);
+  if (chMatch) item.channels = chMatch[1].trim();
+  const brMatch = rest.match(/(\d+)\s*kb\/s/);
+  if (brMatch) item.bitrate = Number(brMatch[1]);
+}
+
+function parseMediaInfo(stderr) {
+  const info = {
+    format: "",
+    durationText: "",
+    duration: 0,
+    bitrateText: "",
+    bitrate: 0,
+    start: "",
+    metadata: {},
+    videoStreams: [],
+    audioStreams: [],
+    otherStreams: [],
+  };
+
+  const inputMatch = stderr.match(/Input\s+#0,\s*([^\n]+?),\s*from\s+'/);
+  if (inputMatch) info.format = inputMatch[1].trim();
+
+  const durLine = stderr.match(/Duration:\s*([^\n]+)/);
+  if (durLine) {
+    const parts = durLine[1].split(",").map((p) => p.trim());
+    for (const part of parts) {
+      const dm = part.match(/^([\d:.]+|N\/A)$/);
+      const sm = part.match(/^start:\s*(.+)$/);
+      const bm = part.match(/^bitrate:\s*(.+)$/);
+      if (dm && !info.durationText) info.durationText = dm[1];
+      if (sm) info.start = sm[1];
+      if (bm) info.bitrateText = bm[1];
+    }
+    const t = info.durationText.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (t) info.duration = Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]);
+    const b = info.bitrateText.match(/(\d+)\s*kb\/s/);
+    if (b) info.bitrate = Number(b[1]);
+  }
+
+  const inputIdx = stderr.indexOf("Input #0");
+  const durIdx = inputIdx >= 0 ? stderr.indexOf("Duration:", inputIdx) : -1;
+  if (inputIdx >= 0 && durIdx > inputIdx) {
+    const block = stderr.slice(inputIdx, durIdx);
+    const metaIdx = block.indexOf("Metadata:");
+    if (metaIdx >= 0) {
+      const lines = block.slice(metaIdx).split("\n").slice(1);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const m = line.match(/^\s+([^:]+?)\s*:\s*(.*)$/);
+        if (!m) break;
+        info.metadata[m[1].trim()] = m[2].trim();
+      }
+    }
+  }
+
+  const streamRegex = /Stream\s+#(\d+):(\d+)(?:\[[^\]]+\])?(?:\(([^)]+)\))?:\s+(Video|Audio|Subtitle|Data|Attachment):\s*([^\n]+)/g;
+  let match;
+  while ((match = streamRegex.exec(stderr))) {
+    const [, , idx, lang, kind, rest] = match;
+    const item = {
+      index: Number(idx),
+      language: lang || "",
+      kind,
+      raw: rest.trim(),
+    };
+    if (kind === "Video") {
+      parseVideoStream(rest, item);
+      info.videoStreams.push(item);
+    } else if (kind === "Audio") {
+      parseAudioStream(rest, item);
+      info.audioStreams.push(item);
+    } else {
+      info.otherStreams.push(item);
+    }
+  }
+  return info;
+}
+
+ipcMain.handle("info:pickFile", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "选择媒体文件",
+    properties: ["openFile"],
+    filters: [
+      { name: "Media", extensions: INFO_EXTS },
+      { name: "All", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+  return { filePath: result.filePaths[0] };
+});
+
+ipcMain.handle("info:probe", async (_event, filePath) => {
+  if (!filePath) throw new Error("File path is required.");
+  const stat = await fs.promises.stat(filePath);
+  if (!stat.isFile()) throw new Error("Not a file.");
+
+  const stderr = await probeRawInfo(filePath);
+  const parsed = parseMediaInfo(stderr);
+
+  return {
+    filePath,
+    fileName: path.basename(filePath),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    info: parsed,
+    raw: stderr,
+  };
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// yt-dlp integration (B站 / YouTube / 抖音 / Twitter / etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let cachedYtDlpPath;
+function ytDlpPath() {
+  if (cachedYtDlpPath) return cachedYtDlpPath;
+  if (process.env.YT_DLP_PATH) {
+    cachedYtDlpPath = process.env.YT_DLP_PATH;
+    return cachedYtDlpPath;
+  }
+  const exe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  if (app.isPackaged) {
+    const resourcePath = path.join(process.resourcesPath, exe);
+    if (fs.existsSync(resourcePath)) {
+      cachedYtDlpPath = resourcePath;
+      return cachedYtDlpPath;
+    }
+  } else {
+    const archDir = `${process.platform}-${process.arch}`;
+    const devPath = path.join(__dirname, "..", "resources", "yt-dlp", archDir, exe);
+    if (fs.existsSync(devPath)) {
+      cachedYtDlpPath = devPath;
+      return cachedYtDlpPath;
+    }
+  }
+  cachedYtDlpPath = exe;
+  return cachedYtDlpPath;
+}
+
+function runYtDlp(args, { onLine, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ytDlpPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+
+    if (signal) {
+      signal.kill = () => {
+        killed = true;
+        if (!child.killed) child.kill("SIGKILL");
+      };
+    }
+
+    const handleLine = (line) => {
+      if (onLine) onLine(line);
+    };
+
+    let buf = "";
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      buf += text;
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, "");
+        buf = buf.slice(idx + 1);
+        handleLine(line);
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 80000) stderr = stderr.slice(-80000);
+    });
+    child.on("error", (error) => {
+      if (error.code === "ENOENT") {
+        reject(
+          new Error(
+            "yt-dlp 未找到。请安装 yt-dlp（pip install yt-dlp 或 brew install yt-dlp），或设置 YT_DLP_PATH 环境变量。"
+          )
+        );
+      } else {
+        reject(error);
+      }
+    });
+    child.on("close", (code) => {
+      if (buf) handleLine(buf);
+      if (killed) {
+        reject(new Error("已取消"));
+        return;
+      }
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const tail = stderr.split("\n").filter(Boolean).slice(-3).join(" | ");
+        reject(new Error(tail || `yt-dlp 退出码 ${code}`));
+      }
+    });
+  });
+}
+
+function summarizeFormat(f) {
+  const hasV = f.vcodec && f.vcodec !== "none";
+  const hasA = f.acodec && f.acodec !== "none";
+  let kind = "other";
+  if (hasV && hasA) kind = "combined";
+  else if (hasV) kind = "video";
+  else if (hasA) kind = "audio";
+
+  return {
+    formatId: f.format_id,
+    ext: f.ext,
+    kind,
+    resolution: f.resolution || (f.width && f.height ? `${f.width}x${f.height}` : ""),
+    width: f.width || 0,
+    height: f.height || 0,
+    fps: f.fps || 0,
+    vcodec: hasV ? f.vcodec : "",
+    acodec: hasA ? f.acodec : "",
+    abr: f.abr || 0,
+    tbr: f.tbr || 0,
+    filesize: f.filesize || f.filesize_approx || 0,
+    formatNote: f.format_note || "",
+    protocol: f.protocol || "",
+  };
+}
+
+ipcMain.handle("dlp:listFormats", async (_event, payload) => {
+  const url = typeof payload === "string" ? payload : payload?.url;
+  const cookiesFromBrowser = typeof payload === "object" ? payload?.cookiesFromBrowser : "";
+  if (!url) throw new Error("URL is required.");
+  logEvent("info", "yt-dlp listing formats", { url, cookiesFromBrowser });
+
+  const args = ["-J", "--no-warnings", "--no-playlist", "--no-call-home"];
+  if (cookiesFromBrowser) {
+    args.push("--cookies-from-browser", cookiesFromBrowser);
+  }
+  args.push(url);
+
+  const { stdout } = await runYtDlp(args);
+
+  let json;
+  try {
+    json = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error("解析 yt-dlp 输出失败：" + error.message);
+  }
+
+  const formats = (json.formats || [])
+    .filter((f) => f.format_id && f.protocol !== "mhtml")
+    .map(summarizeFormat);
+
+  return {
+    title: json.title || "",
+    uploader: json.uploader || json.channel || "",
+    duration: json.duration || 0,
+    thumbnail: json.thumbnail || "",
+    webpageUrl: json.webpage_url || url,
+    extractor: json.extractor_key || json.extractor || "",
+    formats,
+  };
+});
+
+ipcMain.handle("dlp:pickOutput", async (_event, options) => {
+  const ext = options?.ext || "mp4";
+  const suggested = options?.suggestedName || `download-${Date.now()}.${ext}`;
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "保存为",
+    defaultPath: path.join(app.getPath("downloads"), suggested),
+    filters: [{ name: ext.toUpperCase(), extensions: [ext] }, { name: "All", extensions: ["*"] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  return { filePath: result.filePath };
+});
+
+let activeDlpSignal = null;
+
+ipcMain.handle("dlp:download", async (_event, payload) => {
+  const { url, format, output, mergeFormat } = payload || {};
+  if (!url) throw new Error("URL is required.");
+  if (!output) throw new Error("Output path is required.");
+
+  const id = `dlp-${Date.now()}`;
+  send("dlp:status", { id, state: "running" });
+  logEvent("info", "yt-dlp downloading", { url, format, output });
+
+  const ext = path.extname(output).replace(/^\./, "").toLowerCase() || "mp4";
+  const concurrency = Number(payload?.concurrency) > 0 ? Number(payload.concurrency) : 8;
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--no-call-home",
+    "--no-mtime",
+    "--newline",
+    "--ffmpeg-location",
+    ffmpegPath(),
+    // Speed: download HLS/DASH fragments in parallel
+    "-N",
+    String(concurrency),
+    // Speed: chunk single-file HTTP downloads so slow sources don't stall one socket
+    "--http-chunk-size",
+    "10M",
+    // Resilience against transient errors / throttling
+    "--retries",
+    "10",
+    "--fragment-retries",
+    "10",
+    "-f",
+    format || "bv*+ba/b",
+    "-o",
+    output,
+  ];
+  if (payload?.cookiesFromBrowser) {
+    args.push("--cookies-from-browser", payload.cookiesFromBrowser);
+  } else if (payload?.cookiesFile) {
+    args.push("--cookies", payload.cookiesFile);
+  }
+  if (payload?.userAgent) {
+    args.push("--user-agent", payload.userAgent);
+  }
+  if (payload?.referer) {
+    args.push("--referer", payload.referer);
+  }
+  if (mergeFormat || ext === "mp4" || ext === "mkv" || ext === "webm") {
+    args.push("--merge-output-format", mergeFormat || ext);
+  }
+  args.push(url);
+
+  const signal = {};
+  activeDlpSignal = signal;
+
+  try {
+    await runYtDlp(args, {
+      signal,
+      onLine: (line) => {
+        if (!line) return;
+        const dl = line.match(/^\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)(?:\s+at\s+([\d.]+\s*\w+\/s))?(?:\s+ETA\s+([\d:]+))?/);
+        if (dl) {
+          send("dlp:progress", {
+            id,
+            percent: Number(dl[1]),
+            total: dl[2],
+            speed: dl[3] || "",
+            eta: dl[4] || "",
+            phase: "downloading",
+          });
+          return;
+        }
+        if (/^\[Merger\]/.test(line)) {
+          send("dlp:progress", { id, phase: "merging" });
+          return;
+        }
+        if (/^\[ExtractAudio\]/.test(line) || /^\[ffmpeg\]/.test(line)) {
+          send("dlp:progress", { id, phase: "post-processing" });
+          return;
+        }
+      },
+    });
+
+    if (!fs.existsSync(output)) {
+      const dir = path.dirname(output);
+      const stem = path.parse(output).name;
+      const candidates = (await fs.promises.readdir(dir)).filter((f) => f.startsWith(stem));
+      if (candidates.length > 0) {
+        const found = path.join(dir, candidates[0]);
+        send("dlp:status", { id, state: "done", filePath: found });
+        return { ok: true, filePath: found };
+      }
+      throw new Error("下载完成但未找到输出文件");
+    }
+
+    const stat = await fs.promises.stat(output);
+    send("dlp:status", { id, state: "done", filePath: output });
+    logEvent("info", "yt-dlp completed", { output, size: stat.size });
+    return { ok: true, filePath: output, size: stat.size };
+  } catch (error) {
+    send("dlp:status", { id, state: "error", message: error.message });
+    logEvent("error", "yt-dlp failed", { error: error.message });
+    throw error;
+  } finally {
+    activeDlpSignal = null;
+  }
+});
+
+ipcMain.handle("dlp:cancel", async () => {
+  if (activeDlpSignal?.kill) activeDlpSignal.kill();
   return { ok: true };
 });
 
