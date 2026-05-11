@@ -23,6 +23,7 @@
         <button class="tab" type="button" data-tab="trim" role="tab">视频裁剪</button>
         <button class="tab" type="button" data-tab="audio" role="tab">音频提取</button>
         <button class="tab" type="button" data-tab="convert" role="tab">格式转换</button>
+        <button class="tab" type="button" data-tab="image" role="tab">图片处理</button>
         <button class="tab" type="button" data-tab="gif" role="tab">转 GIF</button>
         <button class="tab" type="button" data-tab="concat" role="tab">视频拼接</button>
         <button class="tab" type="button" data-tab="info" role="tab">媒体信息</button>
@@ -267,6 +268,86 @@
               <span id="convertState">Idle</span>
               <div class="progress">
                 <div id="convertProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="image" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源图片</label>
+              <div class="trim-row-body">
+                <button id="imagePickInput" type="button">选择图片…</button>
+                <span id="imageInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出格式</label>
+              <div class="trim-row-body">
+                <select id="imageFormat">
+                  <option value="jpg">JPG</option>
+                  <option value="png">PNG</option>
+                  <option value="webp" selected>WebP</option>
+                  <option value="avif">AVIF</option>
+                  <option value="tiff">TIFF</option>
+                  <option value="bmp">BMP</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>质量</label>
+              <div class="trim-row-body image-quality-row">
+                <input id="imageQuality" type="range" min="1" max="100" value="100" />
+                <span id="imageQualityValue" class="trim-muted">100</span>
+                <span class="trim-muted">JPG / WebP / AVIF 生效；PNG 为无损压缩</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>尺寸</label>
+              <div class="trim-row-body">
+                <select id="imageResizeMode">
+                  <option value="source">保持原始</option>
+                  <option value="width">按宽度缩放</option>
+                </select>
+                <input id="imageWidth" class="compact-input" type="number" min="16" step="1" value="1600" disabled />
+                <span class="trim-muted">高度按比例自动计算</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>元数据</label>
+              <div class="trim-row-body">
+                <label class="inline-check">
+                  <input id="imageStripMeta" type="checkbox" checked />
+                  <span>移除 EXIF / 元数据</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="imagePickOutput" type="button">另存为…</button>
+                <span id="imageOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="imageRun" type="button">开始处理</button>
+              <button id="imageCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="imageReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="imageState">Idle</span>
+              <div class="progress">
+                <div id="imageProgress"></div>
               </div>
             </div>
           </div>

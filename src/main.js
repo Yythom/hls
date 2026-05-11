@@ -1724,6 +1724,98 @@ async function runConvert(input, output, options, item, totalDuration) {
   });
 }
 
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function jpegQscaleFromQuality(quality) {
+  return String(Math.round(31 - (clampNumber(quality, 1, 100, 100) / 100) * 29));
+}
+
+function avifCrfFromQuality(quality) {
+  return String(Math.round(63 - (clampNumber(quality, 1, 100, 100) / 100) * 58));
+}
+
+async function runImage(input, output, options, item) {
+  const format = String(options?.format || path.extname(output).slice(1) || "webp").toLowerCase();
+  const quality = clampNumber(options?.quality, 1, 100, 100);
+  const width = clampNumber(options?.width, 16, 20000, 0);
+
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-nostats",
+    "-i",
+    input,
+    "-frames:v",
+    "1",
+  ];
+
+  if (width > 0) {
+    args.push("-vf", `scale=${width}:-1:flags=lanczos`);
+  }
+
+  if (options?.stripMetadata !== false) {
+    args.push("-map_metadata", "-1");
+  }
+
+  if (format === "jpg" || format === "jpeg") {
+    args.push("-f", "image2", "-c:v", "mjpeg", "-q:v", jpegQscaleFromQuality(quality));
+  } else if (format === "png") {
+    args.push("-f", "image2", "-c:v", "png", "-compression_level", "9", "-pred", "mixed");
+  } else if (format === "webp") {
+    args.push(
+      "-f",
+      "webp",
+      "-c:v",
+      "libwebp",
+      "-quality",
+      String(Math.round(quality)),
+      "-compression_level",
+      "6"
+    );
+  } else if (format === "avif") {
+    args.push(
+      "-f",
+      "avif",
+      "-c:v",
+      "libaom-av1",
+      "-still-picture",
+      "1",
+      "-crf",
+      avifCrfFromQuality(quality),
+      "-cpu-used",
+      "6"
+    );
+  } else if (format === "tif" || format === "tiff") {
+    args.push("-f", "image2", "-c:v", "tiff", "-compression_algo", "lzw");
+  } else if (format === "bmp") {
+    args.push("-f", "image2", "-c:v", "bmp");
+  } else {
+    throw new Error(`Unsupported image format: ${format}`);
+  }
+
+  args.push(output);
+
+  send("tools:progress", {
+    id: item.id,
+    phase: "image",
+    message: "处理中",
+    percent: 35,
+  });
+
+  await spawnToolsFfmpeg(args);
+
+  send("tools:progress", {
+    id: item.id,
+    phase: "image",
+    message: "写入完成",
+    percent: 95,
+  });
+}
+
 async function runGif(input, output, options, item) {
   const start = options?.start ? parseTimecode(options.start) : 0;
   const duration = options?.duration ? parseTimecode(options.duration) : null;
@@ -2018,23 +2110,43 @@ ipcMain.handle("trim:cancel", async () => {
 });
 
 const VIDEO_EXTS = ["mp4", "mov", "mkv", "webm", "m4v", "avi", "flv", "ts", "m4s"];
+const IMAGE_EXTS = [
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "avif",
+  "heic",
+  "heif",
+  "tif",
+  "tiff",
+  "bmp",
+  "gif",
+];
 
 ipcMain.handle("tools:pickFile", async (_event, options) => {
   const multi = !!options?.multi;
+  const kind = options?.kind === "image" ? "image" : "video";
+  const filters =
+    options?.filters ||
+    (kind === "image"
+      ? [
+          { name: "Image", extensions: IMAGE_EXTS },
+          { name: "All", extensions: ["*"] },
+        ]
+      : [{ name: "Video", extensions: VIDEO_EXTS }]);
   const result = await dialog.showOpenDialog(mainWindow, {
     title: options?.title || "选择文件",
     properties: multi ? ["openFile", "multiSelections"] : ["openFile"],
-    filters: [{ name: "Video", extensions: VIDEO_EXTS }],
+    filters,
   });
   if (result.canceled || result.filePaths.length === 0) return { canceled: true };
 
   const files = await Promise.all(
     result.filePaths.map(async (filePath) => {
       try {
-        const [stat, duration] = await Promise.all([
-          fs.promises.stat(filePath),
-          probeDuration(filePath).catch(() => 0),
-        ]);
+        const stat = await fs.promises.stat(filePath);
+        const duration = kind === "video" ? await probeDuration(filePath).catch(() => 0) : 0;
         return {
           filePath,
           fileName: path.basename(filePath),
@@ -2072,7 +2184,7 @@ ipcMain.handle("tools:run", async (_event, payload) => {
 
   try {
     let totalDuration = 0;
-    if (op !== "concat" && op !== "gif" && input) {
+    if (op !== "concat" && op !== "gif" && op !== "image" && input) {
       try {
         totalDuration = await probeDuration(input);
       } catch {
@@ -2086,6 +2198,9 @@ ipcMain.handle("tools:run", async (_event, payload) => {
     } else if (op === "convert") {
       if (!input) throw new Error("Input file is required.");
       await runConvert(input, output, options, item, totalDuration);
+    } else if (op === "image") {
+      if (!input) throw new Error("Input file is required.");
+      await runImage(input, output, options, item);
     } else if (op === "gif") {
       if (!input) throw new Error("Input file is required.");
       await runGif(input, output, options, item);

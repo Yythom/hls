@@ -506,6 +506,31 @@ button.secondary:hover {
   background: #ffffff;
 }
 
+.trim-row-body input.compact-input {
+  width: 112px;
+  border: 1px solid #cfd2cc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.image-quality-row input[type="range"] {
+  width: min(260px, 40vw);
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.inline-check input {
+  margin: 0;
+}
+
 .trim-muted {
   overflow: hidden;
   color: var(--muted);

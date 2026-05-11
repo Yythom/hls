@@ -606,6 +606,7 @@ function makeTool({
   getOutputExt,
   getRunPayload,
   validate,
+  pickInputOptions = null,
 }) {
   const tool = {
     input: null,
@@ -628,7 +629,9 @@ function makeTool({
 
   if (pickInputBtn) {
     pickInputBtn.addEventListener("click", async () => {
-      const result = await window.videoFinder.toolsPickFile({ title: "选择源视频" });
+      const result = await window.videoFinder.toolsPickFile(
+        pickInputOptions || { title: "选择源视频" }
+      );
       if (!result || result.canceled) return;
       const file = result.files?.[0];
       if (!file || file.error) {
@@ -763,6 +766,62 @@ makeTool({
     input: t.input,
     output: t.output,
     options: { mode: convertMode.value, scale: convertScale.value },
+  }),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Image convert / compress
+// ─────────────────────────────────────────────────────────────────────────────
+
+const imageFormat = document.querySelector("#imageFormat");
+const imageQuality = document.querySelector("#imageQuality");
+const imageQualityValue = document.querySelector("#imageQualityValue");
+const imageResizeMode = document.querySelector("#imageResizeMode");
+const imageWidth = document.querySelector("#imageWidth");
+const imageStripMeta = document.querySelector("#imageStripMeta");
+const imageState = document.querySelector("#imageState");
+const imageProgress = document.querySelector("#imageProgress");
+
+if (imageQuality && imageQualityValue) {
+  imageQuality.addEventListener("input", () => {
+    imageQualityValue.textContent = imageQuality.value;
+  });
+}
+
+if (imageResizeMode && imageWidth) {
+  imageResizeMode.addEventListener("change", () => {
+    imageWidth.disabled = imageResizeMode.value !== "width";
+  });
+}
+
+makeTool({
+  op: "image",
+  pickInputBtn: document.querySelector("#imagePickInput"),
+  inputNameEl: document.querySelector("#imageInputName"),
+  pickOutputBtn: document.querySelector("#imagePickOutput"),
+  outputNameEl: document.querySelector("#imageOutputName"),
+  runBtn: document.querySelector("#imageRun"),
+  cancelBtn: document.querySelector("#imageCancel"),
+  revealBtn: document.querySelector("#imageReveal"),
+  stateEl: imageState,
+  progressEl: imageProgress,
+  controlEls: [imageFormat, imageQuality, imageResizeMode, imageWidth, imageStripMeta],
+  pickInputOptions: {
+    title: "选择源图片",
+    kind: "image",
+  },
+  getOutputExt: () => imageFormat.value || "webp",
+  validate: (t) => (t.input ? null : "请先选择源图片"),
+  getRunPayload: (t) => ({
+    op: "image",
+    input: t.input,
+    output: t.output,
+    options: {
+      format: imageFormat.value,
+      quality: imageQuality.value,
+      width: imageResizeMode.value === "width" ? imageWidth.value : "",
+      stripMetadata: imageStripMeta.checked,
+    },
   }),
 });
 
@@ -944,6 +1003,7 @@ renderConcatList();
 const TOOL_STATE_ELS = {
   audio: { state: audioState, progress: audioProgress },
   convert: { state: convertState, progress: convertProgress },
+  image: { state: imageState, progress: imageProgress },
   gif: { state: gifState, progress: gifProgress },
   concat: { state: concatState, progress: concatProgress },
 };
@@ -962,6 +1022,11 @@ window.videoFinder.onToolsProgress((payload) => {
   if (payload.phase === "concatenating") {
     els.state.textContent = "合并中";
     els.progress.style.width = "92%";
+    return;
+  }
+  if (payload.phase === "image") {
+    els.state.textContent = payload.message || "处理中";
+    els.progress.style.width = `${payload.percent || 35}%`;
     return;
   }
   if (payload.phase === "encoding") {
