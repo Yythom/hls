@@ -826,6 +826,69 @@ makeTool({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Watermark area processing
+// ─────────────────────────────────────────────────────────────────────────────
+
+const watermarkMode = document.querySelector("#watermarkMode");
+const watermarkX = document.querySelector("#watermarkX");
+const watermarkY = document.querySelector("#watermarkY");
+const watermarkW = document.querySelector("#watermarkW");
+const watermarkH = document.querySelector("#watermarkH");
+const watermarkColor = document.querySelector("#watermarkColor");
+const watermarkCropSide = document.querySelector("#watermarkCropSide");
+const watermarkState = document.querySelector("#watermarkState");
+const watermarkProgress = document.querySelector("#watermarkProgress");
+
+function watermarkRegionError() {
+  const nums = [watermarkX, watermarkY, watermarkW, watermarkH].map((el) => Number(el.value));
+  if (nums.some((n) => !Number.isFinite(n))) return "请输入有效的区域数值";
+  if (nums[0] < 0 || nums[1] < 0) return "X / Y 不能小于 0";
+  if (nums[2] < 1 || nums[3] < 1) return "宽 / 高必须大于 0";
+  return null;
+}
+
+makeTool({
+  op: "watermark",
+  pickInputBtn: document.querySelector("#watermarkPickInput"),
+  inputNameEl: document.querySelector("#watermarkInputName"),
+  pickOutputBtn: document.querySelector("#watermarkPickOutput"),
+  outputNameEl: document.querySelector("#watermarkOutputName"),
+  runBtn: document.querySelector("#watermarkRun"),
+  cancelBtn: document.querySelector("#watermarkCancel"),
+  revealBtn: document.querySelector("#watermarkReveal"),
+  stateEl: watermarkState,
+  progressEl: watermarkProgress,
+  controlEls: [
+    watermarkMode,
+    watermarkX,
+    watermarkY,
+    watermarkW,
+    watermarkH,
+    watermarkColor,
+    watermarkCropSide,
+  ],
+  getOutputExt: () => "mp4",
+  validate: (t) => {
+    if (!t.input) return "请先选择源视频";
+    return watermarkRegionError();
+  },
+  getRunPayload: (t) => ({
+    op: "watermark",
+    input: t.input,
+    output: t.output,
+    options: {
+      mode: watermarkMode.value,
+      x: watermarkX.value,
+      y: watermarkY.value,
+      width: watermarkW.value,
+      height: watermarkH.value,
+      color: watermarkColor.value,
+      cropSide: watermarkCropSide.value,
+    },
+  }),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GIF
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1004,6 +1067,7 @@ const TOOL_STATE_ELS = {
   audio: { state: audioState, progress: audioProgress },
   convert: { state: convertState, progress: convertProgress },
   image: { state: imageState, progress: imageProgress },
+  watermark: { state: watermarkState, progress: watermarkProgress },
   gif: { state: gifState, progress: gifProgress },
   concat: { state: concatState, progress: concatProgress },
 };
@@ -1257,6 +1321,78 @@ const onlineState = document.querySelector("#onlineState");
 const onlineProgress = document.querySelector("#onlineProgress");
 const onlineCookies = document.querySelector("#onlineCookies");
 const onlineConcurrency = document.querySelector("#onlineConcurrency");
+const ytdlpVersion = document.querySelector("#ytdlpVersion");
+const ytdlpCheckUpdate = document.querySelector("#ytdlpCheckUpdate");
+const ytdlpDoUpdate = document.querySelector("#ytdlpDoUpdate");
+const ytdlpUpdateState = document.querySelector("#ytdlpUpdateState");
+
+let ytdlpLatestTag = "";
+
+async function refreshYtDlpVersion({ announceUpToDate = false } = {}) {
+  if (!ytdlpVersion) return;
+  ytdlpCheckUpdate.disabled = true;
+  ytdlpUpdateState.textContent = "";
+  ytdlpDoUpdate.hidden = true;
+  try {
+    const res = await window.videoFinder.dlpCheckUpdate();
+    if (!res.ok) {
+      ytdlpVersion.textContent = "版本: 未知";
+      ytdlpUpdateState.textContent = `检查失败: ${res.error}`;
+      return;
+    }
+    ytdlpVersion.textContent = `版本: ${res.current || "未知"}`;
+    ytdlpLatestTag = res.latest || "";
+    if (res.hasUpdate) {
+      ytdlpDoUpdate.hidden = false;
+      ytdlpDoUpdate.textContent = `更新到 ${res.latest}`;
+      ytdlpUpdateState.textContent = "有新版本可用";
+    } else if (announceUpToDate) {
+      ytdlpUpdateState.textContent = "已是最新";
+    }
+  } catch (error) {
+    ytdlpUpdateState.textContent = `检查失败: ${error.message}`;
+  } finally {
+    ytdlpCheckUpdate.disabled = false;
+  }
+}
+
+if (ytdlpCheckUpdate) {
+  ytdlpCheckUpdate.addEventListener("click", () => refreshYtDlpVersion({ announceUpToDate: true }));
+}
+if (ytdlpDoUpdate) {
+  ytdlpDoUpdate.addEventListener("click", async () => {
+    ytdlpDoUpdate.disabled = true;
+    ytdlpCheckUpdate.disabled = true;
+    ytdlpUpdateState.textContent = "准备下载…";
+    const res = await window.videoFinder.dlpUpdate();
+    ytdlpDoUpdate.disabled = false;
+    ytdlpCheckUpdate.disabled = false;
+    if (!res.ok) {
+      ytdlpUpdateState.textContent = `更新失败: ${res.error}`;
+      return;
+    }
+    ytdlpVersion.textContent = `版本: ${res.current || ytdlpLatestTag}`;
+    ytdlpDoUpdate.hidden = true;
+    ytdlpUpdateState.textContent = "更新完成";
+  });
+}
+if (window.videoFinder.onDlpUpdateProgress) {
+  window.videoFinder.onDlpUpdateProgress((payload) => {
+    if (!ytdlpUpdateState) return;
+    if (payload.phase === "download") {
+      const pct = Math.round(payload.percent || 0);
+      const mb = (payload.received / 1024 / 1024).toFixed(1);
+      const totalMb = payload.total ? (payload.total / 1024 / 1024).toFixed(1) : "?";
+      ytdlpUpdateState.textContent = `下载中 ${pct}%  (${mb}/${totalMb} MB)`;
+    } else if (payload.phase === "done") {
+      ytdlpUpdateState.textContent = "更新完成";
+    } else if (payload.phase === "error") {
+      ytdlpUpdateState.textContent = `更新失败: ${payload.error}`;
+    }
+  });
+}
+// Lazy: check version on first switch to online tab (also runs once now).
+refreshYtDlpVersion();
 
 const online = {
   meta: null,

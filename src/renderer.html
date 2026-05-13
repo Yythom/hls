@@ -24,6 +24,7 @@
         <button class="tab" type="button" data-tab="audio" role="tab">音频提取</button>
         <button class="tab" type="button" data-tab="convert" role="tab">格式转换</button>
         <button class="tab" type="button" data-tab="image" role="tab">图片处理</button>
+        <button class="tab" type="button" data-tab="watermark" role="tab">水印区域</button>
         <button class="tab" type="button" data-tab="gif" role="tab">转 GIF</button>
         <button class="tab" type="button" data-tab="concat" role="tab">视频拼接</button>
         <button class="tab" type="button" data-tab="info" role="tab">媒体信息</button>
@@ -354,6 +355,86 @@
         </section>
       </div>
 
+      <div class="tab-panel" data-panel="watermark" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源视频</label>
+              <div class="trim-row-body">
+                <button id="watermarkPickInput" type="button">选择文件…</button>
+                <span id="watermarkInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>处理方式</label>
+              <div class="trim-row-body">
+                <select id="watermarkMode">
+                  <option value="blur">模糊区域</option>
+                  <option value="mosaic">马赛克区域</option>
+                  <option value="cover">纯色覆盖</option>
+                  <option value="crop">裁掉所在边</option>
+                </select>
+                <span class="trim-muted">用于处理你有权编辑的视频中的固定水印区域</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>区域</label>
+              <div class="trim-row-body region-grid">
+                <input id="watermarkX" class="compact-input" type="number" min="0" step="1" value="0" aria-label="X" />
+                <input id="watermarkY" class="compact-input" type="number" min="0" step="1" value="0" aria-label="Y" />
+                <input id="watermarkW" class="compact-input" type="number" min="1" step="1" value="220" aria-label="宽度" />
+                <input id="watermarkH" class="compact-input" type="number" min="1" step="1" value="90" aria-label="高度" />
+                <span class="trim-muted">X / Y / 宽 / 高，单位像素</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>覆盖颜色</label>
+              <div class="trim-row-body">
+                <input id="watermarkColor" type="color" value="#000000" />
+                <span class="trim-muted">仅纯色覆盖时生效</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>裁剪方向</label>
+              <div class="trim-row-body">
+                <select id="watermarkCropSide">
+                  <option value="top">裁掉上边</option>
+                  <option value="right" selected>裁掉右边</option>
+                  <option value="bottom">裁掉下边</option>
+                  <option value="left">裁掉左边</option>
+                </select>
+                <span class="trim-muted">仅裁掉所在边时生效</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="watermarkPickOutput" type="button">另存为…</button>
+                <span id="watermarkOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="watermarkRun" type="button">开始处理</button>
+              <button id="watermarkCancel" type="button" class="secondary" disabled>取消</button>
+              <button id="watermarkReveal" type="button" class="secondary" hidden>打开文件位置</button>
+            </div>
+
+            <div class="trim-status">
+              <span id="watermarkState">Idle</span>
+              <div class="progress">
+                <div id="watermarkProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
       <div class="tab-panel" data-panel="gif" hidden>
         <section class="trim-band">
           <div class="trim-card">
@@ -478,6 +559,16 @@
       <div class="tab-panel" data-panel="online" hidden>
         <section class="trim-band">
           <div class="trim-card">
+            <div class="trim-row">
+              <label>yt-dlp</label>
+              <div class="trim-row-body">
+                <span id="ytdlpVersion" class="trim-muted">版本: 检测中…</span>
+                <button id="ytdlpCheckUpdate" type="button" class="secondary">检查更新</button>
+                <button id="ytdlpDoUpdate" type="button" hidden>立即更新</button>
+                <span id="ytdlpUpdateState" class="trim-muted"></span>
+              </div>
+            </div>
+
             <div class="trim-row">
               <label>视频链接</label>
               <div class="trim-row-body">

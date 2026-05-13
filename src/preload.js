@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld("videoFinder", {
   dlpPickOutput: (options) => ipcRenderer.invoke("dlp:pickOutput", options),
   dlpDownload: (payload) => ipcRenderer.invoke("dlp:download", payload),
   dlpCancel: () => ipcRenderer.invoke("dlp:cancel"),
+  dlpCheckUpdate: () => ipcRenderer.invoke("dlp:checkUpdate"),
+  dlpUpdate: () => ipcRenderer.invoke("dlp:update"),
+  onDlpUpdateProgress: (callback) => {
+    ipcRenderer.on("dlp:updateProgress", (_event, payload) => callback(payload));
+  },
   onDlpProgress: (callback) => {
     ipcRenderer.on("dlp:progress", (_event, payload) => callback(payload));
   },

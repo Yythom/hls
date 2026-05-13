@@ -1816,6 +1816,92 @@ async function runImage(input, output, options, item) {
   });
 }
 
+function normalizeRegion(options = {}) {
+  const x = Math.round(clampNumber(options.x, 0, 100000, 0));
+  const y = Math.round(clampNumber(options.y, 0, 100000, 0));
+  const width = Math.round(clampNumber(options.width, 1, 100000, 1));
+  const height = Math.round(clampNumber(options.height, 1, 100000, 1));
+  return { x, y, width, height };
+}
+
+function ffmpegColor(input) {
+  const match = String(input || "").trim().match(/^#?([0-9a-f]{6})$/i);
+  return match ? `0x${match[1]}` : "0x000000";
+}
+
+function watermarkFilter(options = {}) {
+  const mode = ["blur", "mosaic", "cover", "crop"].includes(options.mode)
+    ? options.mode
+    : "blur";
+  const { x, y, width, height } = normalizeRegion(options);
+
+  if (mode === "blur") {
+    return `[0:v]split=2[base][wm];[wm]crop=${width}:${height}:${x}:${y},boxblur=8:2[patch];[base][patch]overlay=${x}:${y}[v]`;
+  }
+
+  if (mode === "mosaic") {
+    const smallW = Math.max(1, Math.floor(width / 12));
+    const smallH = Math.max(1, Math.floor(height / 12));
+    return `[0:v]split=2[base][wm];[wm]crop=${width}:${height}:${x}:${y},scale=${smallW}:${smallH}:flags=neighbor,scale=${width}:${height}:flags=neighbor[patch];[base][patch]overlay=${x}:${y}[v]`;
+  }
+
+  if (mode === "cover") {
+    return `[0:v]drawbox=x=${x}:y=${y}:w=${width}:h=${height}:color=${ffmpegColor(
+      options.color
+    )}@0.88:t=fill[v]`;
+  }
+
+  const side = ["top", "right", "bottom", "left"].includes(options.cropSide)
+    ? options.cropSide
+    : "right";
+  if (side === "top") return `[0:v]crop=iw:ih-${y + height}:0:${y + height}[v]`;
+  if (side === "bottom") return `[0:v]crop=iw:${y}:0:0[v]`;
+  if (side === "left") return `[0:v]crop=iw-${x + width}:ih:${x + width}:0[v]`;
+  return `[0:v]crop=${x}:ih:0:0[v]`;
+}
+
+async function runWatermark(input, output, options, item, totalDuration) {
+  const args = [
+    "-hide_banner",
+    "-y",
+    "-nostats",
+    "-progress",
+    "pipe:1",
+    "-i",
+    input,
+    "-filter_complex",
+    watermarkFilter(options),
+    "-map",
+    "[v]",
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "copy",
+    "-movflags",
+    "+faststart",
+    output,
+  ];
+
+  await spawnToolsFfmpeg(args, {
+    onProgressTime: (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: seconds,
+        total: totalDuration,
+      });
+    },
+  });
+}
+
 async function runGif(input, output, options, item) {
   const start = options?.start ? parseTimecode(options.start) : 0;
   const duration = options?.duration ? parseTimecode(options.duration) : null;
@@ -2201,6 +2287,9 @@ ipcMain.handle("tools:run", async (_event, payload) => {
     } else if (op === "image") {
       if (!input) throw new Error("Input file is required.");
       await runImage(input, output, options, item);
+    } else if (op === "watermark") {
+      if (!input) throw new Error("Input file is required.");
+      await runWatermark(input, output, options, item, totalDuration);
     } else if (op === "gif") {
       if (!input) throw new Error("Input file is required.");
       await runGif(input, output, options, item);
@@ -2404,13 +2493,25 @@ ipcMain.handle("info:probe", async (_event, filePath) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let cachedYtDlpPath;
+function ytDlpExeName() {
+  return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+}
+function ytDlpUserPath() {
+  return path.join(app.getPath("userData"), "bin", ytDlpExeName());
+}
 function ytDlpPath() {
   if (cachedYtDlpPath) return cachedYtDlpPath;
   if (process.env.YT_DLP_PATH) {
     cachedYtDlpPath = process.env.YT_DLP_PATH;
     return cachedYtDlpPath;
   }
-  const exe = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  const exe = ytDlpExeName();
+  // Prefer user-updated copy in userData over bundled binary.
+  const userPath = ytDlpUserPath();
+  if (fs.existsSync(userPath) && fs.statSync(userPath).size > 1_000_000) {
+    cachedYtDlpPath = userPath;
+    return cachedYtDlpPath;
+  }
   if (app.isPackaged) {
     const resourcePath = path.join(process.resourcesPath, exe);
     if (fs.existsSync(resourcePath)) {
@@ -2676,6 +2777,121 @@ ipcMain.handle("dlp:download", async (_event, payload) => {
 ipcMain.handle("dlp:cancel", async () => {
   if (activeDlpSignal?.kill) activeDlpSignal.kill();
   return { ok: true };
+});
+
+function compareYtDlpVersions(a, b) {
+  // yt-dlp tags are date-based: "2026.01.15" or "2026.01.15.123456".
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da !== db) return da < db ? -1 : 1;
+  }
+  return 0;
+}
+
+async function getCurrentYtDlpVersion() {
+  try {
+    const { stdout } = await runYtDlp(["--version"]);
+    return stdout.trim().split("\n").pop().trim();
+  } catch {
+    return "";
+  }
+}
+
+async function getLatestYtDlpRelease() {
+  const res = await fetch("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {
+    headers: { "User-Agent": "video-download-app", Accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+  const json = await res.json();
+  return { tag: String(json.tag_name || "").trim(), htmlUrl: json.html_url };
+}
+
+function ytDlpAssetName() {
+  if (process.platform === "win32") return "yt-dlp.exe";
+  if (process.platform === "darwin") return "yt-dlp_macos";
+  return "yt-dlp";
+}
+
+let activeYtDlpUpdate = null;
+
+ipcMain.handle("dlp:checkUpdate", async () => {
+  try {
+    const [current, latest] = await Promise.all([
+      getCurrentYtDlpVersion(),
+      getLatestYtDlpRelease(),
+    ]);
+    const hasUpdate = current && latest.tag ? compareYtDlpVersions(current, latest.tag) < 0 : false;
+    return { ok: true, current, latest: latest.tag, hasUpdate, htmlUrl: latest.htmlUrl };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle("dlp:update", async () => {
+  if (activeYtDlpUpdate) {
+    return { ok: false, error: "已有进行中的更新任务" };
+  }
+  const controller = new AbortController();
+  activeYtDlpUpdate = controller;
+  try {
+    const asset = ytDlpAssetName();
+    const url = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`;
+    const destPath = ytDlpUserPath();
+    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+    const tmpPath = `${destPath}.partial`;
+
+    send("dlp:updateProgress", { phase: "start", percent: 0 });
+    logEvent("info", "yt-dlp update: downloading", { url });
+
+    const res = await fetch(url, { signal: controller.signal, redirect: "follow" });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const total = Number(res.headers.get("content-length")) || 0;
+    let received = 0;
+    let lastEmitted = 0;
+
+    const out = fs.createWriteStream(tmpPath);
+    const reader = res.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.length;
+      if (!out.write(value)) await new Promise((r) => out.once("drain", r));
+      const now = Date.now();
+      if (now - lastEmitted > 150) {
+        lastEmitted = now;
+        send("dlp:updateProgress", {
+          phase: "download",
+          received,
+          total,
+          percent: total ? Math.min(99, (received / total) * 100) : 0,
+        });
+      }
+    }
+    await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+
+    if (fs.statSync(tmpPath).size < 1_000_000) {
+      throw new Error("下载文件异常(过小)");
+    }
+    await fs.promises.rename(tmpPath, destPath);
+    if (process.platform !== "win32") {
+      await fs.promises.chmod(destPath, 0o755);
+    }
+    cachedYtDlpPath = undefined;
+    const current = await getCurrentYtDlpVersion();
+    send("dlp:updateProgress", { phase: "done", percent: 100, current });
+    logEvent("info", "yt-dlp update: done", { path: destPath, version: current });
+    return { ok: true, current, path: destPath };
+  } catch (error) {
+    send("dlp:updateProgress", { phase: "error", error: error.message });
+    logEvent("error", "yt-dlp update failed", { error: error.message });
+    return { ok: false, error: error.message };
+  } finally {
+    activeYtDlpUpdate = null;
+  }
 });
 
 app.whenReady().then(createMainWindow);

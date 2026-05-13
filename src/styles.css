@@ -519,6 +519,23 @@ button.secondary:hover {
   width: min(260px, 40vw);
 }
 
+.region-grid {
+  flex-wrap: wrap;
+}
+
+.region-grid .compact-input {
+  width: 92px;
+}
+
+.trim-row-body input[type="color"] {
+  width: 46px;
+  height: 38px;
+  border: 1px solid #cfd2cc;
+  border-radius: 8px;
+  padding: 3px;
+  background: #ffffff;
+}
+
 .inline-check {
   display: inline-flex;
   align-items: center;
