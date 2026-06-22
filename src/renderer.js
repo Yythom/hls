@@ -14,6 +14,12 @@ const kindFilter = document.querySelector("#kindFilter");
 const logList = document.querySelector("#logList");
 const clearLogsButton = document.querySelector("#clearLogsButton");
 
+const scanView = document.querySelector("#scanView");
+const navBack = document.querySelector("#navBack");
+const navForward = document.querySelector("#navForward");
+const navReload = document.querySelector("#navReload");
+const navAddress = document.querySelector("#navAddress");
+
 const trimPickInput = document.querySelector("#trimPickInput");
 const trimInputName = document.querySelector("#trimInputName");
 const trimDuration = document.querySelector("#trimDuration");
@@ -83,6 +89,8 @@ function updateMetrics() {
   foundCount.textContent = String(items.length);
   directCount.textContent = String(items.filter((item) => !isStream(item)).length);
   streamCount.textContent = String(items.filter(isStream).length);
+  const guideCount = document.querySelector("#guideCount");
+  if (guideCount) guideCount.textContent = String(items.length);
 }
 
 function visibleItems() {
@@ -286,7 +294,10 @@ scanForm.addEventListener("submit", async (event) => {
   scanStatus.textContent = "Loading page";
 
   try {
-    await window.videoFinder.startScan(urlInput.value);
+    const cookieBrowser = document.querySelector("#cookieBrowser");
+    await window.videoFinder.startScan(urlInput.value, {
+      cookiesFromBrowser: cookieBrowser ? cookieBrowser.value : "",
+    });
   } catch (error) {
     scanStatus.textContent = error.message;
     setScanning(false);
@@ -297,6 +308,86 @@ stopButton.addEventListener("click", async () => {
   await window.videoFinder.stopScan();
   setScanning(false);
 });
+
+// --- Embedded browser navigation bar ---------------------------------------
+// The <webview> exposes goBack/goForward/reload/stop/loadURL/getURL directly in
+// the renderer. Capture listeners (attached in the main process on scan start)
+// persist across navigations, so back/forward/address-bar jumps keep capturing.
+function webviewCanGo(direction) {
+  const history = scanView.navigationHistory;
+  try {
+    if (history && typeof history.canGoBack === "function") {
+      return direction === "back" ? history.canGoBack() : history.canGoForward();
+    }
+    return direction === "back" ? scanView.canGoBack() : scanView.canGoForward();
+  } catch {
+    return false;
+  }
+}
+
+function currentWebviewUrl() {
+  try {
+    return scanView.getURL() || "";
+  } catch {
+    return "";
+  }
+}
+
+function syncNav() {
+  navBack.disabled = !webviewCanGo("back");
+  navForward.disabled = !webviewCanGo("forward");
+  const url = currentWebviewUrl();
+  // Don't clobber the address while the user is editing it.
+  if (url && url !== "about:blank" && document.activeElement !== navAddress) {
+    navAddress.value = url;
+  }
+}
+
+navBack.addEventListener("click", () => {
+  if (webviewCanGo("back")) scanView.goBack();
+});
+
+navForward.addEventListener("click", () => {
+  if (webviewCanGo("forward")) scanView.goForward();
+});
+
+navReload.addEventListener("click", () => {
+  try {
+    if (navReload.dataset.loading === "1") scanView.stop();
+    else scanView.reload();
+  } catch {
+    // webview not ready yet — ignore.
+  }
+});
+
+navAddress.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const value = navAddress.value.trim();
+  if (!value) return;
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`;
+  try {
+    scanView.loadURL(url);
+    scanView.blur();
+  } catch (error) {
+    scanStatus.textContent = `无法打开：${error.message}`;
+  }
+});
+
+scanView.addEventListener("did-start-loading", () => {
+  navReload.dataset.loading = "1";
+  navReload.textContent = "✕";
+  navReload.title = "停止加载";
+});
+
+scanView.addEventListener("did-stop-loading", () => {
+  navReload.dataset.loading = "0";
+  navReload.textContent = "⟳";
+  navReload.title = "刷新";
+  syncNav();
+});
+
+scanView.addEventListener("did-navigate", syncNav);
+scanView.addEventListener("did-navigate-in-page", syncNav);
 
 clearLogsButton.addEventListener("click", () => {
   state.logs = [];
@@ -316,15 +407,17 @@ window.videoFinder.onCandidate((item) => {
 
 window.videoFinder.onScanStatus((status) => {
   if (status.state === "loading") {
-    scanStatus.textContent = `Loading ${status.pageUrl}`;
+    scanStatus.textContent = "正在打开页面…";
     setScanning(true);
   } else if (status.state === "loaded") {
-    scanStatus.textContent = "Page loaded";
+    scanStatus.textContent = "页面已加载 · 在下方登录并播放视频";
   } else if (status.state === "idle") {
-    scanStatus.textContent = `Scan complete · ${status.count || 0} found`;
-    setScanning(false);
+    // The embedded webview keeps capturing — keep the scan "active" so the user
+    // can log in / play the video, and can still click Stop.
+    scanStatus.textContent = `已捕获 ${status.count || 0} 个 · 在下方播放视频以捕获 m3u8，完成后点停止`;
+    setScanning(true);
   } else if (status.state === "stopped") {
-    scanStatus.textContent = "Stopped";
+    scanStatus.textContent = "已停止";
     setScanning(false);
   } else if (status.state === "error") {
     scanStatus.textContent = status.message;
@@ -1414,7 +1507,15 @@ function setOnlineRunning(running) {
   onlineUrl.disabled = running;
 }
 
+// When set, the "提取音频" option is selected; value is the target audio ext.
+function chosenAudioFormat() {
+  if (online.selectedFormatId !== "audio-extract") return "";
+  return document.querySelector("#onlineAudioFormat")?.value || "mp3";
+}
+
 function chosenFormatExt() {
+  const audio = chosenAudioFormat();
+  if (audio) return audio;
   if (online.selectedFormatId === "auto") return "mp4";
   const f = online.meta?.formats?.find((x) => x.formatId === online.selectedFormatId);
   return f?.ext || "mp4";
@@ -1446,6 +1547,25 @@ function renderFormats() {
       </span>
     `;
     rows.push(auto);
+  }
+
+  if (filter === "audio" || filter === "all") {
+    const audio = document.createElement("label");
+    audio.className = "online-format is-auto";
+    audio.innerHTML = `
+      <input type="radio" name="online-format" value="audio-extract" />
+      <span class="online-format-main">
+        <strong>提取音频并转换</strong>
+        <span class="trim-muted">下载最佳音轨并转码，不含视频</span>
+      </span>
+      <select id="onlineAudioFormat" class="online-audio-format" aria-label="音频格式">
+        <option value="mp3">MP3</option>
+        <option value="m4a">M4A</option>
+        <option value="flac">FLAC</option>
+        <option value="wav">WAV</option>
+      </select>
+    `;
+    rows.push(audio);
   }
 
   for (const f of items) {
@@ -1482,8 +1602,20 @@ function renderFormats() {
   onlineFormats.addEventListener(
     "change",
     (event) => {
-      if (event.target?.name === "online-format") {
+      // Changing the embedded audio-format dropdown should also select its row.
+      if (event.target?.id === "onlineAudioFormat") {
+        const radio = onlineFormats.querySelector("input[value='audio-extract']");
+        if (radio) radio.checked = true;
+        online.selectedFormatId = "audio-extract";
+      } else if (event.target?.name === "online-format") {
         online.selectedFormatId = event.target.value;
+      } else {
+        return;
+      }
+      // The chosen extension may have changed; a stale output path is now wrong.
+      if (online.output) {
+        online.output = null;
+        onlineOutputName.textContent = "未选择";
       }
     },
     { once: false }
@@ -1568,8 +1700,14 @@ if (onlineRun) {
     onlineProgress.style.width = "0%";
     onlineReveal.hidden = true;
 
+    const audioFormat = chosenAudioFormat();
+
     let format = "bv*+ba/b";
-    if (online.selectedFormatId && online.selectedFormatId !== "auto") {
+    if (
+      online.selectedFormatId &&
+      online.selectedFormatId !== "auto" &&
+      online.selectedFormatId !== "audio-extract"
+    ) {
       format = online.selectedFormatId;
     }
 
@@ -1577,6 +1715,7 @@ if (onlineRun) {
       const result = await window.videoFinder.dlpDownload({
         url,
         format,
+        audioFormat,
         output: online.output,
         cookiesFromBrowser: onlineCookies?.value || "",
         concurrency: Number(onlineConcurrency?.value) || 8,

@@ -8,27 +8,37 @@
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>Video Finder</h1>
-          <p id="scanStatus">Ready</p>
-        </div>
-        <div class="actions">
-          <button id="stopButton" class="secondary" type="button">停止</button>
-        </div>
-      </header>
-
       <nav class="tabs" role="tablist">
-        <button class="tab is-active" type="button" data-tab="scan" role="tab">扫描下载</button>
-        <button class="tab" type="button" data-tab="trim" role="tab">视频裁剪</button>
-        <button class="tab" type="button" data-tab="audio" role="tab">音频提取</button>
-        <button class="tab" type="button" data-tab="convert" role="tab">格式转换</button>
-        <button class="tab" type="button" data-tab="image" role="tab">图片处理</button>
-        <button class="tab" type="button" data-tab="watermark" role="tab">水印区域</button>
-        <button class="tab" type="button" data-tab="gif" role="tab">转 GIF</button>
-        <button class="tab" type="button" data-tab="concat" role="tab">视频拼接</button>
-        <button class="tab" type="button" data-tab="info" role="tab">媒体信息</button>
-        <button class="tab" type="button" data-tab="online" role="tab">在线视频</button>
+        <button class="tab is-active" type="button" data-tab="scan" role="tab">
+          扫描下载
+        </button>
+        <button class="tab" type="button" data-tab="trim" role="tab">
+          视频裁剪
+        </button>
+        <button class="tab" type="button" data-tab="audio" role="tab">
+          音频提取
+        </button>
+        <button class="tab" type="button" data-tab="convert" role="tab">
+          格式转换
+        </button>
+        <button class="tab" type="button" data-tab="image" role="tab">
+          图片处理
+        </button>
+        <button class="tab" type="button" data-tab="watermark" role="tab">
+          水印区域
+        </button>
+        <button class="tab" type="button" data-tab="gif" role="tab">
+          转 GIF
+        </button>
+        <button class="tab" type="button" data-tab="concat" role="tab">
+          视频拼接
+        </button>
+        <button class="tab" type="button" data-tab="info" role="tab">
+          媒体信息
+        </button>
+        <button class="tab" type="button" data-tab="online" role="tab">
+          在线视频
+        </button>
       </nav>
 
       <div class="tab-panel" data-panel="scan">
@@ -42,55 +52,113 @@
               autocomplete="url"
               required
             />
+            <select
+              id="cookieBrowser"
+              aria-label="导入浏览器 Cookie"
+              title="从本地浏览器导入登录 Cookie（用于需要登录的站点，如付费课程）"
+            >
+              <option value="">不带 Cookie</option>
+              <option value="edge">Edge Cookie</option>
+              <option value="chrome">Chrome Cookie</option>
+              <option value="chromium">Chromium Cookie</option>
+              <option value="brave">Brave Cookie</option>
+              <option value="firefox">Firefox Cookie</option>
+              <option value="safari">Safari Cookie</option>
+              <option value="opera">Opera Cookie</option>
+              <option value="vivaldi">Vivaldi Cookie</option>
+            </select>
             <button id="scanButton" type="submit">扫描</button>
+            <button id="stopButton" class="secondary" type="button">停止</button>
           </form>
         </section>
 
-        <section class="workspace">
-          <aside class="summary-panel">
-            <div class="metric">
-              <span>Found</span>
-              <strong id="foundCount">0</strong>
-            </div>
-            <div class="metric">
-              <span>Direct</span>
-              <strong id="directCount">0</strong>
-            </div>
-            <div class="metric">
-              <span>Streams</span>
-              <strong id="streamCount">0</strong>
-            </div>
-            <div class="download-box">
-              <span>Download</span>
-              <strong id="downloadState">Idle</strong>
-              <div class="progress">
-                <div id="progressBar"></div>
-              </div>
-            </div>
-            <div class="log-panel">
-              <div class="log-header">
-                <span>Logs</span>
-                <button id="clearLogsButton" class="tiny-button" type="button">清空</button>
-              </div>
-              <div id="logList" class="log-list" aria-live="polite"></div>
-            </div>
-          </aside>
+        <ol class="scan-guide" id="scanGuide">
+          <li><span class="step-no">1</span> 在下方页面里登录并点击播放视频</li>
+          <li><span class="step-no">2</span> 捕获到的视频会实时出现在右侧</li>
+          <li><span class="step-no">3</span> 选中后点下载</li>
+          <li class="scan-guide-right">
+            <span id="scanStatus" class="scan-status-line">就绪</span>
+            <span class="scan-guide-count"><strong id="guideCount">0</strong> 个已捕获</span>
+          </li>
+        </ol>
 
-          <section class="results-panel">
-            <div class="results-header">
-              <h2>Resources</h2>
-              <select id="kindFilter" aria-label="Filter resources">
-                <option value="all">All</option>
-                <option value="direct">Direct files</option>
-                <option value="streams">Streams</option>
-              </select>
+        <section class="workspace">
+          <section class="scan-browser" id="scanBrowser">
+            <div class="webview-nav">
+              <button id="navBack" class="nav-btn" type="button" title="后退" aria-label="后退" disabled>‹</button>
+              <button id="navForward" class="nav-btn" type="button" title="前进" aria-label="前进" disabled>›</button>
+              <button id="navReload" class="nav-btn" type="button" title="刷新" aria-label="刷新">⟳</button>
+              <input
+                id="navAddress"
+                class="nav-address"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="当前页面地址，回车跳转"
+              />
             </div>
-            <div id="emptyState" class="empty-state">
-              <strong>No resources yet</strong>
-              <span>Enter a page URL and scan.</span>
-            </div>
-            <div id="results" class="results"></div>
+            <webview
+              id="scanView"
+              partition="persist:video-scan"
+              allowpopups
+              src="about:blank"
+            ></webview>
           </section>
+
+          <div class="scan-side">
+            <aside class="summary-panel">
+              <div class="flex">
+                <div class="metric">
+                  <span>Found</span>
+                  <strong id="foundCount">0</strong>
+                </div>
+                <div class="metric">
+                  <span>Direct</span>
+                  <strong id="directCount">0</strong>
+                </div>
+                <div class="metric">
+                  <span>Streams</span>
+                  <strong id="streamCount">0</strong>
+                </div>
+                <div class="download-box">
+                  <span>Download</span>
+                  <strong id="downloadState">Idle</strong>
+                  <div class="progress">
+                    <div id="progressBar"></div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+
+            <section class="results-panel">
+              <div class="results-header">
+                <h2>Resources</h2>
+                <select id="kindFilter" aria-label="Filter resources">
+                  <option value="all">All</option>
+                  <option value="direct">Direct files</option>
+                  <option value="streams">Streams</option>
+                </select>
+              </div>
+              <div id="emptyState" class="empty-state">
+                <strong>还没有捕获到视频</strong>
+                <span
+                  >在左侧页面登录并播放视频，捕获到的 m3u8 / mp4
+                  会出现在这里。</span
+                >
+              </div>
+              <div id="results" class="results"></div>
+            </section>
+          </div>
+
+          <div class="log-panel">
+            <div class="log-header">
+              <span>Logs</span>
+              <button id="clearLogsButton" class="tiny-button" type="button">
+                清空
+              </button>
+            </div>
+            <div id="logList" class="log-list" aria-live="polite"></div>
+          </div>
         </section>
       </div>
 
@@ -101,7 +169,9 @@
               <label>Source video</label>
               <div class="trim-row-body">
                 <button id="trimPickInput" type="button">选择文件…</button>
-                <span id="trimInputName" class="trim-muted">No file selected</span>
+                <span id="trimInputName" class="trim-muted"
+                  >No file selected</span
+                >
               </div>
             </div>
 
@@ -115,11 +185,14 @@
             <div class="trim-section">
               <div class="trim-section-head">
                 <h3>Delete ranges</h3>
-                <button id="trimAddRange" type="button" class="tiny-button">+ 添加片段</button>
+                <button id="trimAddRange" type="button" class="tiny-button">
+                  + 添加片段
+                </button>
               </div>
               <div id="trimRanges" class="trim-ranges"></div>
               <p class="trim-help">
-                Time format: <code>90</code> (seconds), <code>1:30</code> (m:s), or <code>1:30:45.500</code> (h:m:s.ms).
+                Time format: <code>90</code> (seconds), <code>1:30</code> (m:s),
+                or <code>1:30:45.500</code> (h:m:s.ms).
               </p>
             </div>
 
@@ -127,8 +200,12 @@
               <label>Mode</label>
               <div class="trim-row-body">
                 <select id="trimMode">
-                  <option value="accurate">Accurate (re-encode, frame-precise)</option>
-                  <option value="fast">Fast (stream copy, snaps to keyframes)</option>
+                  <option value="accurate">
+                    Accurate (re-encode, frame-precise)
+                  </option>
+                  <option value="fast">
+                    Fast (stream copy, snaps to keyframes)
+                  </option>
                 </select>
               </div>
             </div>
@@ -143,8 +220,12 @@
 
             <div class="trim-actions">
               <button id="trimRun" type="button">开始裁剪</button>
-              <button id="trimCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="trimReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button id="trimCancel" type="button" class="secondary" disabled>
+                取消
+              </button>
+              <button id="trimReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -190,8 +271,12 @@
 
             <div class="trim-actions">
               <button id="audioRun" type="button">开始提取</button>
-              <button id="audioCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="audioReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button id="audioCancel" type="button" class="secondary" disabled>
+                取消
+              </button>
+              <button id="audioReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -232,7 +317,9 @@
               <div class="trim-row-body">
                 <select id="convertMode">
                   <option value="encode">重新编码（兼容性好，慢）</option>
-                  <option value="copy">直接封装（快，仅当编码兼容时可用）</option>
+                  <option value="copy">
+                    直接封装（快，仅当编码兼容时可用）
+                  </option>
                 </select>
               </div>
             </div>
@@ -261,8 +348,17 @@
 
             <div class="trim-actions">
               <button id="convertRun" type="button">开始转换</button>
-              <button id="convertCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="convertReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button
+                id="convertCancel"
+                type="button"
+                class="secondary"
+                disabled
+              >
+                取消
+              </button>
+              <button id="convertReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -303,9 +399,17 @@
             <div class="trim-row">
               <label>质量</label>
               <div class="trim-row-body image-quality-row">
-                <input id="imageQuality" type="range" min="1" max="100" value="100" />
+                <input
+                  id="imageQuality"
+                  type="range"
+                  min="1"
+                  max="100"
+                  value="100"
+                />
                 <span id="imageQualityValue" class="trim-muted">100</span>
-                <span class="trim-muted">JPG / WebP / AVIF 生效；PNG 为无损压缩</span>
+                <span class="trim-muted"
+                  >JPG / WebP / AVIF 生效；PNG 为无损压缩</span
+                >
               </div>
             </div>
 
@@ -316,7 +420,15 @@
                   <option value="source">保持原始</option>
                   <option value="width">按宽度缩放</option>
                 </select>
-                <input id="imageWidth" class="compact-input" type="number" min="16" step="1" value="1600" disabled />
+                <input
+                  id="imageWidth"
+                  class="compact-input"
+                  type="number"
+                  min="16"
+                  step="1"
+                  value="1600"
+                  disabled
+                />
                 <span class="trim-muted">高度按比例自动计算</span>
               </div>
             </div>
@@ -341,8 +453,12 @@
 
             <div class="trim-actions">
               <button id="imageRun" type="button">开始处理</button>
-              <button id="imageCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="imageReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button id="imageCancel" type="button" class="secondary" disabled>
+                取消
+              </button>
+              <button id="imageReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -362,7 +478,9 @@
               <label>源视频</label>
               <div class="trim-row-body">
                 <button id="watermarkPickInput" type="button">选择文件…</button>
-                <span id="watermarkInputName" class="trim-muted">未选择文件</span>
+                <span id="watermarkInputName" class="trim-muted"
+                  >未选择文件</span
+                >
               </div>
             </div>
 
@@ -375,17 +493,51 @@
                   <option value="cover">纯色覆盖</option>
                   <option value="crop">裁掉所在边</option>
                 </select>
-                <span class="trim-muted">用于处理你有权编辑的视频中的固定水印区域</span>
+                <span class="trim-muted"
+                  >用于处理你有权编辑的视频中的固定水印区域</span
+                >
               </div>
             </div>
 
             <div class="trim-row">
               <label>区域</label>
               <div class="trim-row-body region-grid">
-                <input id="watermarkX" class="compact-input" type="number" min="0" step="1" value="0" aria-label="X" />
-                <input id="watermarkY" class="compact-input" type="number" min="0" step="1" value="0" aria-label="Y" />
-                <input id="watermarkW" class="compact-input" type="number" min="1" step="1" value="220" aria-label="宽度" />
-                <input id="watermarkH" class="compact-input" type="number" min="1" step="1" value="90" aria-label="高度" />
+                <input
+                  id="watermarkX"
+                  class="compact-input"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value="0"
+                  aria-label="X"
+                />
+                <input
+                  id="watermarkY"
+                  class="compact-input"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value="0"
+                  aria-label="Y"
+                />
+                <input
+                  id="watermarkW"
+                  class="compact-input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value="220"
+                  aria-label="宽度"
+                />
+                <input
+                  id="watermarkH"
+                  class="compact-input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value="90"
+                  aria-label="高度"
+                />
                 <span class="trim-muted">X / Y / 宽 / 高，单位像素</span>
               </div>
             </div>
@@ -421,8 +573,22 @@
 
             <div class="trim-actions">
               <button id="watermarkRun" type="button">开始处理</button>
-              <button id="watermarkCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="watermarkReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button
+                id="watermarkCancel"
+                type="button"
+                class="secondary"
+                disabled
+              >
+                取消
+              </button>
+              <button
+                id="watermarkReveal"
+                type="button"
+                class="secondary"
+                hidden
+              >
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -449,14 +615,23 @@
             <div class="trim-row">
               <label>开始时间</label>
               <div class="trim-row-body">
-                <input id="gifStart" type="text" placeholder="例如 0、1:30 或 0:00:05.5" value="0" />
+                <input
+                  id="gifStart"
+                  type="text"
+                  placeholder="例如 0、1:30 或 0:00:05.5"
+                  value="0"
+                />
               </div>
             </div>
 
             <div class="trim-row">
               <label>持续时长</label>
               <div class="trim-row-body">
-                <input id="gifDuration" type="text" placeholder="例如 5（秒）；留空为到结尾" />
+                <input
+                  id="gifDuration"
+                  type="text"
+                  placeholder="例如 5（秒）；留空为到结尾"
+                />
               </div>
             </div>
 
@@ -495,8 +670,12 @@
 
             <div class="trim-actions">
               <button id="gifRun" type="button">开始转换</button>
-              <button id="gifCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="gifReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button id="gifCancel" type="button" class="secondary" disabled>
+                取消
+              </button>
+              <button id="gifReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -516,7 +695,9 @@
               <label>视频列表</label>
               <div class="trim-row-body">
                 <button id="concatAdd" type="button">添加视频…</button>
-                <button id="concatClear" type="button" class="secondary">清空</button>
+                <button id="concatClear" type="button" class="secondary">
+                  清空
+                </button>
                 <span class="trim-muted">按列表顺序拼接</span>
               </div>
             </div>
@@ -527,7 +708,9 @@
               <label>模式</label>
               <div class="trim-row-body">
                 <select id="concatMode">
-                  <option value="copy">直接拼接（快，要求编码/分辨率一致）</option>
+                  <option value="copy">
+                    直接拼接（快，要求编码/分辨率一致）
+                  </option>
                   <option value="encode">重新编码（慢，兼容不同来源）</option>
                 </select>
               </div>
@@ -543,8 +726,17 @@
 
             <div class="trim-actions">
               <button id="concatRun" type="button">开始拼接</button>
-              <button id="concatCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="concatReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button
+                id="concatCancel"
+                type="button"
+                class="secondary"
+                disabled
+              >
+                取消
+              </button>
+              <button id="concatReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -563,8 +755,12 @@
               <label>yt-dlp</label>
               <div class="trim-row-body">
                 <span id="ytdlpVersion" class="trim-muted">版本: 检测中…</span>
-                <button id="ytdlpCheckUpdate" type="button" class="secondary">检查更新</button>
-                <button id="ytdlpDoUpdate" type="button" hidden>立即更新</button>
+                <button id="ytdlpCheckUpdate" type="button" class="secondary">
+                  检查更新
+                </button>
+                <button id="ytdlpDoUpdate" type="button" hidden>
+                  立即更新
+                </button>
                 <span id="ytdlpUpdateState" class="trim-muted"></span>
               </div>
             </div>
@@ -576,7 +772,15 @@
                   id="onlineUrl"
                   type="url"
                   placeholder="支持 B 站 / YouTube / 抖音 / Twitter 等（粘贴页面 URL）"
-                  style="flex:1; min-width:0; border:1px solid #cfd2cc; border-radius:8px; padding:8px 10px; background:#fff; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+                  style="
+                    flex: 1;
+                    min-width: 0;
+                    border: 1px solid #cfd2cc;
+                    border-radius: 8px;
+                    padding: 8px 10px;
+                    background: #fff;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                  "
                 />
                 <button id="onlineFetch" type="button">解析</button>
               </div>
@@ -602,7 +806,8 @@
               </div>
               <div id="onlineFormats" class="online-formats"></div>
               <p class="trim-help">
-                选择「合并」可让 yt-dlp 自动选最佳画质 + 最佳音频并合成 MP4。其他选项可手动指定单个流。
+                选择「合并」可让 yt-dlp 自动选最佳画质 + 最佳音频并合成
+                MP4。其他选项可手动指定单个流。
               </p>
             </div>
 
@@ -620,7 +825,9 @@
                   <option value="opera">Opera</option>
                   <option value="vivaldi">Vivaldi</option>
                 </select>
-                <span class="trim-muted">B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态</span>
+                <span class="trim-muted"
+                  >B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态</span
+                >
               </div>
             </div>
 
@@ -648,8 +855,17 @@
 
             <div class="trim-actions">
               <button id="onlineRun" type="button">开始下载</button>
-              <button id="onlineCancel" type="button" class="secondary" disabled>取消</button>
-              <button id="onlineReveal" type="button" class="secondary" hidden>打开文件位置</button>
+              <button
+                id="onlineCancel"
+                type="button"
+                class="secondary"
+                disabled
+              >
+                取消
+              </button>
+              <button id="onlineReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
             </div>
 
             <div class="trim-status">
@@ -660,7 +876,8 @@
             </div>
 
             <p class="trim-help">
-              已内置 <code>yt-dlp</code>。如需自定义版本，可设置 <code>YT_DLP_PATH</code> 环境变量后启动 App。
+              已内置 <code>yt-dlp</code>。如需自定义版本，可设置
+              <code>YT_DLP_PATH</code> 环境变量后启动 App。
             </p>
           </div>
         </section>
@@ -673,8 +890,12 @@
               <label>媒体文件</label>
               <div class="trim-row-body">
                 <button id="infoPickInput" type="button">选择文件…</button>
-                <button id="infoReveal" type="button" class="secondary" hidden>打开文件位置</button>
-                <span id="infoInputName" class="trim-muted">未选择文件（或拖拽至此）</span>
+                <button id="infoReveal" type="button" class="secondary" hidden>
+                  打开文件位置
+                </button>
+                <span id="infoInputName" class="trim-muted"
+                  >未选择文件（或拖拽至此）</span
+                >
               </div>
             </div>
 
@@ -713,9 +934,17 @@
               <section class="info-section">
                 <div class="trim-section-head">
                   <h3>原始输出</h3>
-                  <div style="display:flex; gap:8px;">
-                    <button id="infoCopyJson" type="button" class="tiny-button">复制 JSON</button>
-                    <button id="infoToggleRaw" type="button" class="tiny-button">展开</button>
+                  <div style="display: flex; gap: 8px">
+                    <button id="infoCopyJson" type="button" class="tiny-button">
+                      复制 JSON
+                    </button>
+                    <button
+                      id="infoToggleRaw"
+                      type="button"
+                      class="tiny-button"
+                    >
+                      展开
+                    </button>
                   </div>
                 </div>
                 <pre id="infoRaw" class="info-raw" hidden></pre>

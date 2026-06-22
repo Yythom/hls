@@ -23,9 +23,17 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
   });
   mainWindow.loadFile(path.join(__dirname, "renderer.html"));
+
+  // The scan tab embeds a <webview> for the user to log in / play videos.
+  // Hand its guest webContents to the scanner so it can drive navigation,
+  // capture media requests, and inject cookies — all inside this one window.
+  mainWindow.webContents.on("did-attach-webview", (_event, guest) => {
+    scanner.setScanContents(guest);
+  });
 }
 
 function getMainWindow() {
@@ -47,7 +55,7 @@ function logEvent(level, message, details = {}) {
   });
 }
 
-const scanner = createScanner({ BrowserWindow, send, logEvent });
+const scanner = createScanner({ send, logEvent });
 const ffmpeg = createFfmpeg({ app, makeDownloadHeaders: scanner.makeDownloadHeaders, send, logEvent });
 const httpDownloader = createHttpDownloader({
   makeDownloadHeaders: scanner.makeDownloadHeaders,
@@ -71,6 +79,7 @@ const tools = createTools({
 });
 const mediaInfo = createMediaInfo({ ffmpegPath: ffmpeg.ffmpegPath });
 const ytdlp = createYtdlp({ app, dialog, getMainWindow, ffmpegPath: ffmpeg.ffmpegPath, send, logEvent });
+scanner.setCookieExporter(ytdlp.exportBrowserCookies);
 
 registerIpc({
   ipcMain,
@@ -92,4 +101,4 @@ app.on("window-all-closed", () => {
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
 });
-app.on("before-quit", scanner.closeScanWindow);
+app.on("before-quit", scanner.resetScan);

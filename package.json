@@ -1,7 +1,7 @@
 {
   "name": "video-download",
   "version": "1.0.0",
-  "description": "Desktop app for discovering and downloading video resources from web pages.",
+  "description": "video-download",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",

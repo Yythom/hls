@@ -8,7 +8,8 @@ contextBridge.exposeInMainWorld("videoFinder", {
       return file?.path || "";
     }
   },
-  startScan: (url) => ipcRenderer.invoke("scan:start", url),
+  startScan: (url, options) =>
+    ipcRenderer.invoke("scan:start", { url, cookiesFromBrowser: options?.cookiesFromBrowser || "" }),
   stopScan: () => ipcRenderer.invoke("scan:stop"),
   startDownload: (item) => ipcRenderer.invoke("download:start", item),
   showFile: (filePath) => ipcRenderer.invoke("file:show", filePath),

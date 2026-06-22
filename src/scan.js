@@ -1,10 +1,15 @@
+const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-function createScanner({ BrowserWindow, send, logEvent }) {
-  let scanWindow;
+function createScanner({ send, logEvent }) {
+  // The guest webContents of the <webview> embedded in the scan tab. Injected
+  // via setScanContents() once the renderer mounts the webview.
+  let scanContents = null;
   let scanMeta = null;
   let activeScanSession = null;
+  // Injected after construction (breaks the scanner<->ytdlp dependency cycle).
+  let cookieExporter = null;
   const discovered = new Map();
   const requestHeadersByUrl = new Map();
 
@@ -33,6 +38,10 @@ function createScanner({ BrowserWindow, send, logEvent }) {
     "origin",
     "referer",
     "user-agent",
+    // Capture the exact Cookie the browser sent while playing — for sites that
+    // require login (e.g. paid courses) the media/segment requests are
+    // authenticated by this cookie, often on a different domain than the page.
+    "cookie",
   ]);
 
   const HEADER_NAMES = {
@@ -41,6 +50,7 @@ function createScanner({ BrowserWindow, send, logEvent }) {
     origin: "Origin",
     referer: "Referer",
     "user-agent": "User-Agent",
+    cookie: "Cookie",
   };
 
   function pickDownloadHeaders(headers = {}) {
@@ -164,10 +174,10 @@ function createScanner({ BrowserWindow, send, logEvent }) {
   }
 
   async function collectDomCandidates() {
-    if (!scanWindow || scanWindow.isDestroyed()) return;
+    if (!scanContents || scanContents.isDestroyed()) return;
 
     try {
-      const urls = await scanWindow.webContents.executeJavaScript(`
+      const urls = await scanContents.executeJavaScript(`
         (() => {
           const values = new Set();
           const push = (value) => {
@@ -189,15 +199,113 @@ function createScanner({ BrowserWindow, send, logEvent }) {
     }
   }
 
-  function closeScanWindow() {
-    if (scanWindow && !scanWindow.isDestroyed()) {
-      scanWindow.close();
+  function detachWebRequest(session) {
+    if (!session) return;
+    const filter = { urls: ["http://*/*", "https://*/*"] };
+    try {
+      session.webRequest.onBeforeSendHeaders(filter, null);
+      session.webRequest.onBeforeRequest(filter, null);
+      session.webRequest.onHeadersReceived(filter, null);
+    } catch {
+      // Session may already be torn down — ignore.
     }
-    scanWindow = null;
+  }
+
+  // The browser now lives inside the main window (embedded <webview>), so there
+  // is no window to close. Resetting means: stop capturing, clear state, and
+  // park the webview on a blank page.
+  function resetScan() {
+    detachWebRequest(activeScanSession);
+
+    if (scanContents && !scanContents.isDestroyed()) {
+      scanContents.removeAllListeners("did-finish-load");
+      scanContents.removeAllListeners("did-fail-load");
+      scanContents.loadURL("about:blank").catch(() => {});
+    }
+
     scanMeta = null;
     activeScanSession = null;
     requestHeadersByUrl.clear();
-    logEvent("info", "Closed scan window");
+    logEvent("info", "Reset scan");
+  }
+
+  // Best-effort registrable domain (last two labels). Good enough to scope
+  // imported cookies to the target site without bundling a public-suffix list.
+  function baseDomainOf(hostname) {
+    const labels = String(hostname || "").split(".").filter(Boolean);
+    if (labels.length <= 2) return labels.join(".");
+    return labels.slice(-2).join(".");
+  }
+
+  function parseNetscapeCookies(text) {
+    const cookies = [];
+    for (const raw of text.split(/\r?\n/)) {
+      let line = raw;
+      if (!line.trim()) continue;
+      let httpOnly = false;
+      if (line.startsWith("#HttpOnly_")) {
+        httpOnly = true;
+        line = line.slice("#HttpOnly_".length);
+      } else if (line.startsWith("#")) {
+        continue;
+      }
+      const parts = line.split("\t");
+      if (parts.length < 7) continue;
+      const [domain, , cookiePath, secureFlag, expiry, name, value] = parts;
+      if (!domain || !name) continue;
+      cookies.push({
+        domain,
+        path: cookiePath || "/",
+        secure: secureFlag === "TRUE",
+        expiry: Number(expiry) || 0,
+        name,
+        value,
+        httpOnly,
+      });
+    }
+    return cookies;
+  }
+
+  // Pull cookies from a locally installed browser (via yt-dlp) and inject the
+  // ones relevant to the target site into the scan window's session, so the
+  // user doesn't have to log in again inside the scan window.
+  async function loadBrowserCookies(browser, pageUrl, session) {
+    if (!browser) return 0;
+    if (!cookieExporter) throw new Error("Cookie 导入功能未初始化。");
+
+    const file = await cookieExporter(browser);
+    let text;
+    try {
+      text = await fs.promises.readFile(file, "utf8");
+    } finally {
+      fs.promises.rm(file, { force: true }).catch(() => {});
+    }
+
+    const baseDomain = baseDomainOf(new URL(pageUrl).hostname);
+    let imported = 0;
+    for (const c of parseNetscapeCookies(text)) {
+      const host = c.domain.replace(/^\./, "");
+      if (baseDomain && !host.endsWith(baseDomain)) continue;
+
+      const cookie = {
+        url: `${c.secure ? "https" : "http"}://${host}${c.path}`,
+        name: c.name,
+        value: c.value,
+        path: c.path,
+        secure: c.secure,
+        httpOnly: c.httpOnly,
+      };
+      if (c.domain.startsWith(".")) cookie.domain = c.domain;
+      if (c.expiry > 0) cookie.expirationDate = c.expiry;
+
+      try {
+        await session.cookies.set(cookie);
+        imported++;
+      } catch (error) {
+        logEvent("debug", "Skipped a cookie", { name: c.name, host, error: error.message });
+      }
+    }
+    return imported;
   }
 
   function normalizePageUrl(input) {
@@ -211,31 +319,23 @@ function createScanner({ BrowserWindow, send, logEvent }) {
     return parsed.toString();
   }
 
-  async function startScan(rawUrl) {
+  async function startScan(rawUrl, options = {}) {
     const pageUrl = normalizePageUrl(rawUrl);
-    closeScanWindow();
+    const cookiesFromBrowser = options?.cookiesFromBrowser || "";
+
+    if (!scanContents || scanContents.isDestroyed()) {
+      throw new Error("扫描视图未就绪，请稍候重试。");
+    }
+
+    resetScan();
     discovered.clear();
     scanMeta = { pageUrl, startedAt: Date.now() };
     logEvent("info", "Starting scan", { pageUrl });
 
-    scanWindow = new BrowserWindow({
-      width: 1366,
-      height: 900,
-      show: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        partition: `persist:video-scan-${Date.now()}`,
-        autoplayPolicy: "no-user-gesture-required",
-        backgroundThrottling: false,
-      },
-    });
+    scanContents.setAudioMuted(true);
 
-    scanWindow.webContents.setAudioMuted(true);
-
-    const webContentsId = scanWindow.webContents.id;
-    const scanSession = scanWindow.webContents.session;
+    const webContentsId = scanContents.id;
+    const scanSession = scanContents.session;
     activeScanSession = scanSession;
     const filter = { urls: ["http://*/*", "https://*/*"] };
 
@@ -267,7 +367,7 @@ function createScanner({ BrowserWindow, send, logEvent }) {
       callback({ responseHeaders: details.responseHeaders });
     });
 
-    scanWindow.webContents.on("did-finish-load", async () => {
+    scanContents.on("did-finish-load", async () => {
       send("scan:status", { state: "loaded", pageUrl });
       logEvent("info", "Page loaded", { pageUrl });
       await collectDomCandidates();
@@ -275,19 +375,26 @@ function createScanner({ BrowserWindow, send, logEvent }) {
       setTimeout(collectDomCandidates, 8000);
     });
 
-    scanWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    scanContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
       if (validatedURL === pageUrl) {
         send("scan:status", { state: "error", pageUrl, message: `${errorCode}: ${errorDescription}` });
         logEvent("error", "Page load failed", { pageUrl, errorCode, errorDescription });
       }
     });
 
-    scanWindow.on("closed", () => {
-      scanWindow = null;
-    });
+    if (cookiesFromBrowser) {
+      try {
+        const count = await loadBrowserCookies(cookiesFromBrowser, pageUrl, scanSession);
+        send("scan:log", { level: "info", message: `已从 ${cookiesFromBrowser} 导入 ${count} 条 Cookie` });
+        logEvent("info", "Imported browser cookies", { browser: cookiesFromBrowser, count });
+      } catch (error) {
+        send("scan:log", { level: "warn", message: `导入 ${cookiesFromBrowser} Cookie 失败：${error.message}` });
+        logEvent("warn", "Browser cookie import failed", { browser: cookiesFromBrowser, error: error.message });
+      }
+    }
 
     send("scan:status", { state: "loading", pageUrl });
-    await scanWindow.loadURL(pageUrl);
+    await scanContents.loadURL(pageUrl);
 
     setTimeout(() => {
       send("scan:status", {
@@ -295,7 +402,7 @@ function createScanner({ BrowserWindow, send, logEvent }) {
         pageUrl,
         count: discovered.size,
       });
-      logEvent("info", "Scan finished", { pageUrl, count: discovered.size });
+      logEvent("info", "Scan listening (webview)", { pageUrl, count: discovered.size });
     }, 9000);
 
     return { pageUrl };
@@ -325,15 +432,18 @@ function createScanner({ BrowserWindow, send, logEvent }) {
       headers.Referer = item.pageUrl;
     }
 
-    const cookie = await cookieHeaderForItem(item);
-    if (cookie) {
-      headers.Cookie = cookie;
+    // Prefer the exact Cookie the browser sent for this resource; only fall
+    // back to a session lookup (by the resource's own domain) when we didn't
+    // capture one — the captured value is the ground truth that worked.
+    if (!headers.Cookie) {
+      const cookie = await cookieHeaderForItem(item);
+      if (cookie) headers.Cookie = cookie;
     }
 
     logEvent("debug", "Prepared download headers", {
       url: item.url,
       headers: Object.keys(headers),
-      hasCookie: Boolean(cookie),
+      hasCookie: Boolean(headers.Cookie),
     });
 
     return headers;
@@ -341,9 +451,15 @@ function createScanner({ BrowserWindow, send, logEvent }) {
 
   return {
     startScan,
-    closeScanWindow,
+    setCookieExporter: (fn) => {
+      cookieExporter = fn;
+    },
+    setScanContents: (contents) => {
+      scanContents = contents;
+    },
+    resetScan,
     stopScan: () => {
-      closeScanWindow();
+      resetScan();
       send("scan:status", { state: "stopped" });
       return { ok: true };
     },

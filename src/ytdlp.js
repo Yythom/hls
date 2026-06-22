@@ -1,6 +1,19 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+
+const SUPPORTED_COOKIE_BROWSERS = new Set([
+  "brave",
+  "chrome",
+  "chromium",
+  "edge",
+  "firefox",
+  "opera",
+  "safari",
+  "vivaldi",
+  "whale",
+]);
 
 function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent }) {
   let cachedYtDlpPath;
@@ -189,6 +202,11 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
 
     const ext = path.extname(output).replace(/^\./, "").toLowerCase() || "mp4";
     const concurrency = Number(payload?.concurrency) > 0 ? Number(payload.concurrency) : 8;
+    // Audio-only quick extraction (e.g. download as MP3).
+    const AUDIO_FORMATS = new Set(["mp3", "m4a", "aac", "flac", "wav", "opus", "vorbis"]);
+    const audioFormat = AUDIO_FORMATS.has(String(payload?.audioFormat || "").toLowerCase())
+      ? String(payload.audioFormat).toLowerCase()
+      : "";
     const args = [
       "--no-playlist",
       "--no-warnings",
@@ -208,10 +226,14 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       "--fragment-retries",
       "10",
       "-f",
-      format || "bv*+ba/b",
+      audioFormat ? "ba/b" : format || "bv*+ba/b",
       "-o",
       output,
     ];
+    if (audioFormat) {
+      // Extract the audio track and transcode to the requested container.
+      args.push("-x", "--audio-format", audioFormat, "--audio-quality", "0");
+    }
     if (payload?.cookiesFromBrowser) {
       args.push("--cookies-from-browser", payload.cookiesFromBrowser);
     } else if (payload?.cookiesFile) {
@@ -223,7 +245,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     if (payload?.referer) {
       args.push("--referer", payload.referer);
     }
-    if (mergeFormat || ext === "mp4" || ext === "mkv" || ext === "webm") {
+    if (!audioFormat && (mergeFormat || ext === "mp4" || ext === "mkv" || ext === "webm")) {
       args.push("--merge-output-format", mergeFormat || ext);
     }
     args.push(url);
@@ -404,6 +426,30 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     }
   }
 
+  // Dump a browser's cookie jar to a temporary Netscape file using yt-dlp's
+  // robust per-platform decryption, and return the file path. yt-dlp exits
+  // non-zero when given no URL, but still writes the jar — so we ignore the
+  // exit code and instead verify the file was produced.
+  async function exportBrowserCookies(browser) {
+    const safe = String(browser || "").toLowerCase().replace(/[^a-z]/g, "");
+    if (!SUPPORTED_COOKIE_BROWSERS.has(safe)) {
+      throw new Error(`不支持从该浏览器读取 Cookie: ${browser}`);
+    }
+    const outFile = path.join(os.tmpdir(), `vf-cookies-${Date.now()}-${process.pid}.txt`);
+    const args = ["--cookies-from-browser", safe, "--cookies", outFile, "--no-warnings", "--simulate"];
+    logEvent("info", "Exporting cookies from browser", { browser: safe });
+    try {
+      await runYtDlp(args);
+    } catch (error) {
+      // Expected: "You must provide at least one URL" -> exit code 2.
+      logEvent("debug", "yt-dlp cookie export exited non-zero (expected)", { error: error.message });
+    }
+    if (!fs.existsSync(outFile) || fs.statSync(outFile).size === 0) {
+      throw new Error(`无法从 ${safe} 读取 Cookie（可能未安装、未登录，或需要授权访问）。`);
+    }
+    return outFile;
+  }
+
   return {
     listFormats,
     pickOutput,
@@ -411,6 +457,8 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     cancel,
     checkUpdate,
     update,
+    exportBrowserCookies,
+    supportedCookieBrowsers: () => Array.from(SUPPORTED_COOKIE_BROWSERS),
   };
 }
 
