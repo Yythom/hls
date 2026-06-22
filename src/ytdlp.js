@@ -134,7 +134,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     if (!url) throw new Error("URL is required.");
     logEvent("info", "yt-dlp listing formats", { url, cookiesFromBrowser });
 
-    const args = ["-J", "--no-warnings", "--no-playlist", "--no-call-home"];
+    const args = ["-J", "--no-warnings", "--no-playlist"];
     if (cookiesFromBrowser) {
       args.push("--cookies-from-browser", cookiesFromBrowser);
     }
@@ -192,7 +192,6 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     const args = [
       "--no-playlist",
       "--no-warnings",
-      "--no-call-home",
       "--no-mtime",
       "--newline",
       "--ffmpeg-location",
