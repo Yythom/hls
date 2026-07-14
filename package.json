@@ -12,9 +12,10 @@
     "predist": "npm run fetch:bins",
     "predist:mac": "npm run fetch:bins",
     "predist:win": "npm run fetch:bins",
-    "dist": "rm -rf dist && electron-builder -mw",
-    "dist:mac": "rm -rf dist && electron-builder --mac",
-    "dist:win": "rm -rf dist && electron-builder --win"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dist": "npm run clean && electron-builder -mw",
+    "dist:mac": "npm run clean && electron-builder --mac",
+    "dist:win": "npm run clean && electron-builder --win"
   },
   "keywords": [
     "electron",

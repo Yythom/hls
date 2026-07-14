@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { isLikelyVideoResource, isMp4Item, delay } = require("./media");
