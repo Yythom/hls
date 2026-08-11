@@ -1524,6 +1524,8 @@ async function resolveCookieOptions(url) {
 }
 
 const LOGIN_HINT = "B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态";
+// Chromium 127+ on Windows encrypts cookies with a key yt-dlp cannot obtain.
+const CHROMIUM_BROWSERS = new Set(["chrome", "edge", "chromium", "brave", "opera", "vivaldi"]);
 
 // Reflect the saved session for the site in the URL box: whether the login
 // buttons show at all, and whether we already have a usable cookie jar.
@@ -1535,7 +1537,11 @@ async function refreshLoginState() {
   if (!appLogin) {
     online.cookiesFile = "";
     online.cookiesUserAgent = "";
-    onlineLoginState.textContent = LOGIN_HINT;
+    const risky =
+      navigator.userAgent.includes("Windows") && CHROMIUM_BROWSERS.has(onlineCookies?.value);
+    onlineLoginState.textContent = risky
+      ? "Windows 上 Chrome/Edge 的 Cookie 已被系统加密，yt-dlp 多半读不到——建议改选「应用内登录（扫码）」"
+      : LOGIN_HINT;
     return;
   }
 

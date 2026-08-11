@@ -182,11 +182,21 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
   // yt-dlp's raw cookie errors are opaque; point at the actual way out.
   function describeCookieError(error, browser) {
     const message = String(error?.message || "");
-    if (!browser || !/cookie/i.test(message)) return error;
-    if (/could not copy|permission|being used by another process/i.test(message)) {
+    if (!browser) return error;
+
+    // Chromium 127+ on Windows wraps cookies in App-Bound Encryption (v20): the
+    // key lives behind a system service that only the browser itself may ask,
+    // so no amount of file copying helps. yt-dlp cannot read these at all.
+    if (/DPAPI|10927|failed to decrypt|app-?bound/i.test(message)) {
+      return new Error(
+        `${browser} 的 Cookie 已被 Windows 应用绑定加密（Chromium 127+），yt-dlp 无法解密——这不是配置问题，换浏览器版本也无效。` +
+          `请把「登录 Cookie」改选「应用内登录（扫码）」，在应用内登录一次即可。原始错误：${message}`
+      );
+    }
+    if (/could not copy|permission|being used by another process|cookie database/i.test(message)) {
       return new Error(
         `无法读取 ${browser} 的 Cookie（数据库被占用或无权访问）。请完全退出 ${browser}（含后台进程）后重试；` +
-          `若仍失败，可改用扫描窗口内直接登录，或导出 cookies.txt 后导入。原始错误：${message}`
+          `若仍失败，请改选「应用内登录（扫码）」。原始错误：${message}`
       );
     }
     return error;
@@ -559,7 +569,10 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       await cookies.release();
     }
     if (!fs.existsSync(outFile) || fs.statSync(outFile).size === 0) {
-      if (lastError && /cookie/i.test(lastError.message)) throw describeCookieError(lastError, safe);
+      // Only surface yt-dlp's own message when we recognised it — otherwise it
+      // is the harmless "You must provide at least one URL" exit.
+      const described = lastError ? describeCookieError(lastError, safe) : null;
+      if (described && described !== lastError) throw described;
       throw new Error(`无法从 ${safe} 读取 Cookie（可能未安装、未登录，或需要授权访问）。`);
     }
     return outFile;
