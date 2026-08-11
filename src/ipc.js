@@ -18,7 +18,7 @@ const IMAGE_EXTS = [
   "gif",
 ];
 
-function registerIpc({ ipcMain, getMainWindow, scanner, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, send, logEvent }) {
+function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, send, logEvent }) {
   ipcMain.handle("scan:start", async (_event, payload) => {
     if (payload && typeof payload === "object") {
       return scanner.startScan(payload.url, { cookiesFromBrowser: payload.cookiesFromBrowser });
@@ -162,6 +162,10 @@ function registerIpc({ ipcMain, getMainWindow, scanner, httpDownloader, hlsDownl
   ipcMain.handle("dlp:cancel", async () => ytdlp.cancel());
   ipcMain.handle("dlp:checkUpdate", async () => ytdlp.checkUpdate());
   ipcMain.handle("dlp:update", async () => ytdlp.update());
+
+  ipcMain.handle("login:open", async (_event, url) => login.open(url));
+  ipcMain.handle("login:status", async (_event, url) => login.status(url));
+  ipcMain.handle("login:clear", async (_event, url) => login.clear(url));
 }
 
 module.exports = { registerIpc };

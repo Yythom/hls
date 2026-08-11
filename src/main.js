@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, session } = require("electron");
 const path = require("path");
 
+const { createLogin } = require("./login");
 const { createScanner } = require("./scan");
 const { createHttpDownloader } = require("./download-http");
 const { createFfmpeg } = require("./ffmpeg");
@@ -79,12 +80,14 @@ const tools = createTools({
 });
 const mediaInfo = createMediaInfo({ ffmpegPath: ffmpeg.ffmpegPath });
 const ytdlp = createYtdlp({ app, dialog, getMainWindow, ffmpegPath: ffmpeg.ffmpegPath, send, logEvent });
+const login = createLogin({ app, BrowserWindow, session, getMainWindow, logEvent });
 scanner.setCookieExporter(ytdlp.exportBrowserCookies);
 
 registerIpc({
   ipcMain,
   getMainWindow,
   scanner,
+  login,
   httpDownloader,
   hlsDownloader,
   tools,
@@ -101,4 +104,7 @@ app.on("window-all-closed", () => {
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
 });
-app.on("before-quit", scanner.resetScan);
+app.on("before-quit", () => {
+  scanner.resetScan();
+  login.closeActive();
+});

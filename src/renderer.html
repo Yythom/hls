@@ -816,6 +816,7 @@
               <div class="trim-row-body">
                 <select id="onlineCookies">
                   <option value="">不使用（未登录）</option>
+                  <option value="app-login">应用内登录（扫码，推荐）</option>
                   <option value="chrome">Chrome</option>
                   <option value="edge">Edge</option>
                   <option value="firefox">Firefox</option>
@@ -825,7 +826,9 @@
                   <option value="opera">Opera</option>
                   <option value="vivaldi">Vivaldi</option>
                 </select>
-                <span class="trim-muted"
+                <button id="onlineLogin" type="button" hidden>扫码登录…</button>
+                <button id="onlineLoginClear" type="button" hidden>退出登录</button>
+                <span id="onlineLoginState" class="trim-muted"
                   >B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态</span
                 >
               </div>

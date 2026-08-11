@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
+const { stageChromiumProfile, isChromiumBrowser } = require("./win-cookies");
 
 const SUPPORTED_COOKIE_BROWSERS = new Set([
   "brave",
@@ -141,6 +142,56 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     };
   }
 
+  // Resolve a `--cookies-from-browser` value into a spec yt-dlp can actually
+  // use, plus a `release()` for whatever temp state it needed. On Windows we
+  // hand yt-dlp our own unlocked copy of the Chromium profile, because its
+  // internal copy step fails while the browser is running (yt-dlp#7271).
+  async function prepareCookieSpec(value) {
+    const noop = { spec: "", release: async () => {} };
+    const raw = String(value || "").trim();
+    if (!raw) return noop;
+    // An explicit spec (profile / keyring / container) is passed through as-is.
+    if (/[:+]/.test(raw)) return { ...noop, spec: raw };
+
+    const browser = raw.toLowerCase().replace(/[^a-z]/g, "");
+    if (!SUPPORTED_COOKIE_BROWSERS.has(browser)) {
+      throw new Error(`不支持从该浏览器读取 Cookie: ${raw}`);
+    }
+    if (process.platform !== "win32" || !isChromiumBrowser(browser)) {
+      return { ...noop, spec: browser };
+    }
+
+    try {
+      const staged = await stageChromiumProfile(browser);
+      if (staged) {
+        logEvent("info", "Staged a private copy of the browser profile", { browser, dir: staged.dir });
+        return {
+          spec: staged.spec,
+          release: () => fs.promises.rm(staged.dir, { recursive: true, force: true }).catch(() => {}),
+        };
+      }
+    } catch (error) {
+      logEvent("warn", "Failed to stage browser profile copy; using browser name", {
+        browser,
+        error: error.message,
+      });
+    }
+    return { ...noop, spec: browser };
+  }
+
+  // yt-dlp's raw cookie errors are opaque; point at the actual way out.
+  function describeCookieError(error, browser) {
+    const message = String(error?.message || "");
+    if (!browser || !/cookie/i.test(message)) return error;
+    if (/could not copy|permission|being used by another process/i.test(message)) {
+      return new Error(
+        `无法读取 ${browser} 的 Cookie（数据库被占用或无权访问）。请完全退出 ${browser}（含后台进程）后重试；` +
+          `若仍失败，可改用扫描窗口内直接登录，或导出 cookies.txt 后导入。原始错误：${message}`
+      );
+    }
+    return error;
+  }
+
   async function listFormats(payload) {
     const url = typeof payload === "string" ? payload : payload?.url;
     const cookiesFromBrowser = typeof payload === "object" ? payload?.cookiesFromBrowser : "";
@@ -148,12 +199,25 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     logEvent("info", "yt-dlp listing formats", { url, cookiesFromBrowser });
 
     const args = ["-J", "--no-warnings", "--no-playlist"];
-    if (cookiesFromBrowser) {
-      args.push("--cookies-from-browser", cookiesFromBrowser);
+    const cookies = await prepareCookieSpec(cookiesFromBrowser);
+    if (cookies.spec) {
+      args.push("--cookies-from-browser", cookies.spec);
+    } else if (payload?.cookiesFile) {
+      args.push("--cookies", payload.cookiesFile);
+    }
+    if (payload?.userAgent) {
+      args.push("--user-agent", payload.userAgent);
     }
     args.push(url);
 
-    const { stdout } = await runYtDlp(args);
+    let stdout;
+    try {
+      ({ stdout } = await runYtDlp(args));
+    } catch (error) {
+      throw describeCookieError(error, cookiesFromBrowser);
+    } finally {
+      await cookies.release();
+    }
 
     let json;
     try {
@@ -234,8 +298,9 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       // Extract the audio track and transcode to the requested container.
       args.push("-x", "--audio-format", audioFormat, "--audio-quality", "0");
     }
-    if (payload?.cookiesFromBrowser) {
-      args.push("--cookies-from-browser", payload.cookiesFromBrowser);
+    const cookies = await prepareCookieSpec(payload?.cookiesFromBrowser);
+    if (cookies.spec) {
+      args.push("--cookies-from-browser", cookies.spec);
     } else if (payload?.cookiesFile) {
       args.push("--cookies", payload.cookiesFile);
     }
@@ -297,12 +362,14 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       send("dlp:status", { id, state: "done", filePath: output });
       logEvent("info", "yt-dlp completed", { output, size: stat.size });
       return { ok: true, filePath: output, size: stat.size };
-    } catch (error) {
+    } catch (rawError) {
+      const error = describeCookieError(rawError, payload?.cookiesFromBrowser);
       send("dlp:status", { id, state: "error", message: error.message });
       logEvent("error", "yt-dlp failed", { error: error.message });
       throw error;
     } finally {
       activeDlpSignal = null;
+      await cookies.release();
     }
   }
 
@@ -333,13 +400,55 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     }
   }
 
-  async function getLatestYtDlpRelease() {
-    const res = await fetch("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {
-      headers: { "User-Agent": "video-download-app", Accept: "application/vnd.github+json" },
+  const RELEASES_URL = "https://github.com/yt-dlp/yt-dlp/releases";
+  const UA = "video-download-app";
+
+  // The /releases/latest page 302s to /releases/tag/<version>. Reading that tag
+  // costs no API quota, unlike api.github.com which rate-limits unauthenticated
+  // callers to 60 requests/hour per IP (surfacing as HTTP 403).
+  async function getLatestTagViaRedirect() {
+    const res = await fetch(`${RELEASES_URL}/latest`, {
+      redirect: "manual",
+      headers: { "User-Agent": UA, Accept: "text/html" },
     });
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+    const location = res.headers.get("location") || "";
+    const tag = location.match(/\/releases\/tag\/([^/?#]+)/)?.[1];
+    if (!tag) throw new Error(`GitHub ${res.status}`);
+    return { tag: decodeURIComponent(tag), htmlUrl: `${RELEASES_URL}/tag/${tag}` };
+  }
+
+  async function getLatestTagViaApi() {
+    const headers = { "User-Agent": UA, Accept: "application/vnd.github+json" };
+    // A token lifts the anonymous rate limit; optional.
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", { headers });
+    if (!res.ok) {
+      const hint = res.status === 403 || res.status === 429 ? "（请求频率超限或被网络策略拦截）" : "";
+      throw new Error(`GitHub API ${res.status}${hint}`);
+    }
     const json = await res.json();
     return { tag: String(json.tag_name || "").trim(), htmlUrl: json.html_url };
+  }
+
+  let cachedRelease = null;
+  const RELEASE_CACHE_MS = 60 * 60 * 1000;
+
+  async function getLatestYtDlpRelease() {
+    if (cachedRelease && Date.now() - cachedRelease.at < RELEASE_CACHE_MS) {
+      return cachedRelease.value;
+    }
+    let value;
+    try {
+      value = await getLatestTagViaRedirect();
+    } catch (error) {
+      logEvent("warn", "Release redirect lookup failed, falling back to GitHub API", {
+        error: error.message,
+      });
+      value = await getLatestTagViaApi();
+    }
+    cachedRelease = { at: Date.now(), value };
+    return value;
   }
 
   function ytDlpAssetName() {
@@ -436,15 +545,21 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       throw new Error(`不支持从该浏览器读取 Cookie: ${browser}`);
     }
     const outFile = path.join(os.tmpdir(), `vf-cookies-${Date.now()}-${process.pid}.txt`);
-    const args = ["--cookies-from-browser", safe, "--cookies", outFile, "--no-warnings", "--simulate"];
+    const cookies = await prepareCookieSpec(safe);
+    const args = ["--cookies-from-browser", cookies.spec, "--cookies", outFile, "--no-warnings", "--simulate"];
     logEvent("info", "Exporting cookies from browser", { browser: safe });
+    let lastError = null;
     try {
       await runYtDlp(args);
     } catch (error) {
       // Expected: "You must provide at least one URL" -> exit code 2.
+      lastError = error;
       logEvent("debug", "yt-dlp cookie export exited non-zero (expected)", { error: error.message });
+    } finally {
+      await cookies.release();
     }
     if (!fs.existsSync(outFile) || fs.statSync(outFile).size === 0) {
+      if (lastError && /cookie/i.test(lastError.message)) throw describeCookieError(lastError, safe);
       throw new Error(`无法从 ${safe} 读取 Cookie（可能未安装、未登录，或需要授权访问）。`);
     }
     return outFile;

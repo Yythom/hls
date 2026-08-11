@@ -1413,6 +1413,9 @@ const onlineReveal = document.querySelector("#onlineReveal");
 const onlineState = document.querySelector("#onlineState");
 const onlineProgress = document.querySelector("#onlineProgress");
 const onlineCookies = document.querySelector("#onlineCookies");
+const onlineLogin = document.querySelector("#onlineLogin");
+const onlineLoginClear = document.querySelector("#onlineLoginClear");
+const onlineLoginState = document.querySelector("#onlineLoginState");
 const onlineConcurrency = document.querySelector("#onlineConcurrency");
 const ytdlpVersion = document.querySelector("#ytdlpVersion");
 const ytdlpCheckUpdate = document.querySelector("#ytdlpCheckUpdate");
@@ -1492,7 +1495,119 @@ const online = {
   selectedFormatId: "auto",
   output: null,
   running: false,
+  // Netscape cookie jar produced by the in-app login window, plus the UA that
+  // was used to obtain it (sites tie sessions to the UA).
+  cookiesFile: "",
+  cookiesUserAgent: "",
 };
+
+// The cookie-related args every yt-dlp call needs, for whichever source the
+// user picked. Returns null when the user asked for the in-app login but has no
+// session for *this* URL's site — running anonymously instead would fail in a
+// confusing way on member-only videos. Re-reads the jar per call so switching
+// the URL to another site can never reuse the previous site's cookies.
+async function resolveCookieOptions(url) {
+  const source = onlineCookies?.value || "";
+  if (source !== "app-login") {
+    return { cookiesFromBrowser: source, cookiesFile: "", userAgent: "" };
+  }
+  const res = await window.videoFinder.loginStatus(url);
+  if (!res.ok || !res.loggedIn) {
+    online.cookiesFile = "";
+    online.cookiesUserAgent = "";
+    onlineState.textContent = `请先点击「扫码登录」完成 ${res.name || "该站点"} 的登录`;
+    return null;
+  }
+  online.cookiesFile = res.file;
+  online.cookiesUserAgent = res.userAgent || "";
+  return { cookiesFromBrowser: "", cookiesFile: res.file, userAgent: res.userAgent || "" };
+}
+
+const LOGIN_HINT = "B 站 1080P+ / 会员视频 必需。从所选浏览器读取登录态";
+
+// Reflect the saved session for the site in the URL box: whether the login
+// buttons show at all, and whether we already have a usable cookie jar.
+async function refreshLoginState() {
+  if (!onlineLogin || !onlineLoginState) return;
+  const appLogin = onlineCookies?.value === "app-login";
+  onlineLogin.hidden = !appLogin;
+  onlineLoginClear.hidden = true;
+  if (!appLogin) {
+    online.cookiesFile = "";
+    online.cookiesUserAgent = "";
+    onlineLoginState.textContent = LOGIN_HINT;
+    return;
+  }
+
+  const url = onlineUrl?.value.trim() || "";
+  if (!url) {
+    onlineLoginState.textContent = "请先填写视频 URL，再登录对应站点";
+    return;
+  }
+  const res = await window.videoFinder.loginStatus(url);
+  if (!res.ok) {
+    onlineLoginState.textContent = res.error || "无法确定站点";
+    return;
+  }
+  if (res.loggedIn) {
+    online.cookiesFile = res.file;
+    online.cookiesUserAgent = res.userAgent || "";
+    onlineLoginClear.hidden = false;
+    onlineLogin.textContent = "重新登录…";
+    const when = res.updatedAt ? new Date(res.updatedAt).toLocaleString() : "";
+    onlineLoginState.textContent = `已登录 ${res.name}（${res.count} 条 Cookie${when ? ` · ${when}` : ""}）`;
+  } else {
+    online.cookiesFile = "";
+    online.cookiesUserAgent = "";
+    onlineLogin.textContent = "扫码登录…";
+    onlineLoginState.textContent = `未登录 ${res.name}，点击「扫码登录」在应用内登录一次`;
+  }
+}
+
+if (onlineCookies) {
+  onlineCookies.addEventListener("change", refreshLoginState);
+}
+if (onlineUrl) {
+  onlineUrl.addEventListener("change", refreshLoginState);
+}
+
+if (onlineLogin) {
+  onlineLogin.addEventListener("click", async () => {
+    const url = onlineUrl?.value.trim() || "";
+    if (!url) {
+      onlineLoginState.textContent = "请先填写视频 URL";
+      return;
+    }
+    onlineLogin.disabled = true;
+    onlineLoginState.textContent = "已打开登录窗口，请扫码登录…";
+    try {
+      const res = await window.videoFinder.loginOpen(url);
+      if (res.ok) {
+        online.cookiesFile = res.file;
+        online.cookiesUserAgent = res.userAgent || "";
+        onlineLoginState.textContent = `已登录 ${res.name}（${res.count} 条 Cookie）`;
+      } else {
+        onlineLoginState.textContent = res.canceled
+          ? "已取消登录（窗口被关闭）"
+          : `登录未完成：${res.error || "未知原因"}`;
+      }
+    } catch (error) {
+      onlineLoginState.textContent = `登录失败：${error.message}`;
+    } finally {
+      onlineLogin.disabled = false;
+      await refreshLoginState();
+    }
+  });
+}
+
+if (onlineLoginClear) {
+  onlineLoginClear.addEventListener("click", async () => {
+    const url = onlineUrl?.value.trim() || "";
+    if (!url) return;
+    await window.videoFinder.loginClear(url);
+    await refreshLoginState();
+  });
+}
 
 function sanitizeFilename(name) {
   return (name || "video").replace(/[\/\\?%*:|"<>]/g, "_").slice(0, 120) || "video";
@@ -1633,6 +1748,8 @@ if (onlineFetch) {
       onlineState.textContent = "请输入视频 URL";
       return;
     }
+    const cookies = await resolveCookieOptions(url);
+    if (!cookies) return;
     onlineState.textContent = "解析中…";
     onlineMeta.hidden = true;
     onlineFormatsBox.hidden = true;
@@ -1640,10 +1757,7 @@ if (onlineFetch) {
     onlineReveal.hidden = true;
     onlineFetch.disabled = true;
     try {
-      const meta = await window.videoFinder.dlpListFormats({
-        url,
-        cookiesFromBrowser: onlineCookies?.value || "",
-      });
+      const meta = await window.videoFinder.dlpListFormats({ url, ...cookies });
       online.meta = meta;
       onlineTitle.textContent = meta.title || "(无标题)";
       const sub = [];
@@ -1695,6 +1809,8 @@ if (onlineRun) {
       onlineState.textContent = "请先选择保存位置";
       return;
     }
+    const cookies = await resolveCookieOptions(url);
+    if (!cookies) return;
     setOnlineRunning(true);
     onlineState.textContent = "启动中";
     onlineProgress.style.width = "0%";
@@ -1717,7 +1833,7 @@ if (onlineRun) {
         format,
         audioFormat,
         output: online.output,
-        cookiesFromBrowser: onlineCookies?.value || "",
+        ...cookies,
         concurrency: Number(onlineConcurrency?.value) || 8,
       });
       onlineState.textContent = `完成${result.size ? ` · ${formatBytes(result.size)}` : ""}`;
