@@ -20,10 +20,8 @@ const IMAGE_EXTS = [
 
 function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, send, logEvent }) {
   ipcMain.handle("scan:start", async (_event, payload) => {
-    if (payload && typeof payload === "object") {
-      return scanner.startScan(payload.url, { cookiesFromBrowser: payload.cookiesFromBrowser });
-    }
-    return scanner.startScan(payload);
+    const url = payload && typeof payload === "object" ? payload.url : payload;
+    return scanner.startScan(url);
   });
   ipcMain.handle("scan:stop", async () => scanner.stopScan());
 

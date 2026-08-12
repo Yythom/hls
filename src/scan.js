@@ -1,4 +1,3 @@
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
@@ -8,8 +7,6 @@ function createScanner({ send, logEvent }) {
   let scanContents = null;
   let scanMeta = null;
   let activeScanSession = null;
-  // Injected after construction (breaks the scanner<->ytdlp dependency cycle).
-  let cookieExporter = null;
   const discovered = new Map();
   const requestHeadersByUrl = new Map();
 
@@ -417,85 +414,6 @@ function createScanner({ send, logEvent }) {
     logEvent("info", "Reset scan");
   }
 
-  // Best-effort registrable domain (last two labels). Good enough to scope
-  // imported cookies to the target site without bundling a public-suffix list.
-  function baseDomainOf(hostname) {
-    const labels = String(hostname || "").split(".").filter(Boolean);
-    if (labels.length <= 2) return labels.join(".");
-    return labels.slice(-2).join(".");
-  }
-
-  function parseNetscapeCookies(text) {
-    const cookies = [];
-    for (const raw of text.split(/\r?\n/)) {
-      let line = raw;
-      if (!line.trim()) continue;
-      let httpOnly = false;
-      if (line.startsWith("#HttpOnly_")) {
-        httpOnly = true;
-        line = line.slice("#HttpOnly_".length);
-      } else if (line.startsWith("#")) {
-        continue;
-      }
-      const parts = line.split("\t");
-      if (parts.length < 7) continue;
-      const [domain, , cookiePath, secureFlag, expiry, name, value] = parts;
-      if (!domain || !name) continue;
-      cookies.push({
-        domain,
-        path: cookiePath || "/",
-        secure: secureFlag === "TRUE",
-        expiry: Number(expiry) || 0,
-        name,
-        value,
-        httpOnly,
-      });
-    }
-    return cookies;
-  }
-
-  // Pull cookies from a locally installed browser (via yt-dlp) and inject the
-  // ones relevant to the target site into the scan window's session, so the
-  // user doesn't have to log in again inside the scan window.
-  async function loadBrowserCookies(browser, pageUrl, session) {
-    if (!browser) return 0;
-    if (!cookieExporter) throw new Error("Cookie 导入功能未初始化。");
-
-    const file = await cookieExporter(browser);
-    let text;
-    try {
-      text = await fs.promises.readFile(file, "utf8");
-    } finally {
-      fs.promises.rm(file, { force: true }).catch(() => {});
-    }
-
-    const baseDomain = baseDomainOf(new URL(pageUrl).hostname);
-    let imported = 0;
-    for (const c of parseNetscapeCookies(text)) {
-      const host = c.domain.replace(/^\./, "");
-      if (baseDomain && !host.endsWith(baseDomain)) continue;
-
-      const cookie = {
-        url: `${c.secure ? "https" : "http"}://${host}${c.path}`,
-        name: c.name,
-        value: c.value,
-        path: c.path,
-        secure: c.secure,
-        httpOnly: c.httpOnly,
-      };
-      if (c.domain.startsWith(".")) cookie.domain = c.domain;
-      if (c.expiry > 0) cookie.expirationDate = c.expiry;
-
-      try {
-        await session.cookies.set(cookie);
-        imported++;
-      } catch (error) {
-        logEvent("debug", "Skipped a cookie", { name: c.name, host, error: error.message });
-      }
-    }
-    return imported;
-  }
-
   function normalizePageUrl(input) {
     const value = String(input || "").trim();
     if (!value) throw new Error("Please enter a URL.");
@@ -507,9 +425,8 @@ function createScanner({ send, logEvent }) {
     return parsed.toString();
   }
 
-  async function startScan(rawUrl, options = {}) {
+  async function startScan(rawUrl) {
     const pageUrl = normalizePageUrl(rawUrl);
-    const cookiesFromBrowser = options?.cookiesFromBrowser || "";
 
     if (!scanContents || scanContents.isDestroyed()) {
       throw new Error("扫描视图未就绪，请稍候重试。");
@@ -576,17 +493,6 @@ function createScanner({ send, logEvent }) {
       }
     });
 
-    if (cookiesFromBrowser) {
-      try {
-        const count = await loadBrowserCookies(cookiesFromBrowser, pageUrl, scanSession);
-        send("scan:log", { level: "info", message: `已从 ${cookiesFromBrowser} 导入 ${count} 条 Cookie` });
-        logEvent("info", "Imported browser cookies", { browser: cookiesFromBrowser, count });
-      } catch (error) {
-        send("scan:log", { level: "warn", message: `导入 ${cookiesFromBrowser} Cookie 失败：${error.message}` });
-        logEvent("warn", "Browser cookie import failed", { browser: cookiesFromBrowser, error: error.message });
-      }
-    }
-
     send("scan:status", { state: "loading", pageUrl });
     await scanContents.loadURL(pageUrl);
 
@@ -645,9 +551,6 @@ function createScanner({ send, logEvent }) {
 
   return {
     startScan,
-    setCookieExporter: (fn) => {
-      cookieExporter = fn;
-    },
     setScanContents: (contents) => {
       scanContents = contents;
     },

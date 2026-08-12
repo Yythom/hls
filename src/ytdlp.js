@@ -1,5 +1,4 @@
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const { stageChromiumProfile, isChromiumBrowser } = require("./win-cookies");
@@ -545,39 +544,6 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     }
   }
 
-  // Dump a browser's cookie jar to a temporary Netscape file using yt-dlp's
-  // robust per-platform decryption, and return the file path. yt-dlp exits
-  // non-zero when given no URL, but still writes the jar — so we ignore the
-  // exit code and instead verify the file was produced.
-  async function exportBrowserCookies(browser) {
-    const safe = String(browser || "").toLowerCase().replace(/[^a-z]/g, "");
-    if (!SUPPORTED_COOKIE_BROWSERS.has(safe)) {
-      throw new Error(`不支持从该浏览器读取 Cookie: ${browser}`);
-    }
-    const outFile = path.join(os.tmpdir(), `vf-cookies-${Date.now()}-${process.pid}.txt`);
-    const cookies = await prepareCookieSpec(safe);
-    const args = ["--cookies-from-browser", cookies.spec, "--cookies", outFile, "--no-warnings", "--simulate"];
-    logEvent("info", "Exporting cookies from browser", { browser: safe });
-    let lastError = null;
-    try {
-      await runYtDlp(args);
-    } catch (error) {
-      // Expected: "You must provide at least one URL" -> exit code 2.
-      lastError = error;
-      logEvent("debug", "yt-dlp cookie export exited non-zero (expected)", { error: error.message });
-    } finally {
-      await cookies.release();
-    }
-    if (!fs.existsSync(outFile) || fs.statSync(outFile).size === 0) {
-      // Only surface yt-dlp's own message when we recognised it — otherwise it
-      // is the harmless "You must provide at least one URL" exit.
-      const described = lastError ? describeCookieError(lastError, safe) : null;
-      if (described && described !== lastError) throw described;
-      throw new Error(`无法从 ${safe} 读取 Cookie（可能未安装、未登录，或需要授权访问）。`);
-    }
-    return outFile;
-  }
-
   return {
     listFormats,
     pickOutput,
@@ -585,7 +551,6 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     cancel,
     checkUpdate,
     update,
-    exportBrowserCookies,
     supportedCookieBrowsers: () => Array.from(SUPPORTED_COOKIE_BROWSERS),
   };
 }

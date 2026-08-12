@@ -82,7 +82,6 @@ const tools = createTools({
 const mediaInfo = createMediaInfo({ ffmpegPath: ffmpeg.ffmpegPath });
 const ytdlp = createYtdlp({ app, dialog, getMainWindow, ffmpegPath: ffmpeg.ffmpegPath, send, logEvent });
 const login = createLogin({ app, BrowserWindow, session, getMainWindow, logEvent });
-scanner.setCookieExporter(ytdlp.exportBrowserCookies);
 
 registerIpc({
   ipcMain,

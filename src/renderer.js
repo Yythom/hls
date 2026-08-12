@@ -294,10 +294,7 @@ scanForm.addEventListener("submit", async (event) => {
   scanStatus.textContent = "Loading page";
 
   try {
-    const cookieBrowser = document.querySelector("#cookieBrowser");
-    await window.videoFinder.startScan(urlInput.value, {
-      cookiesFromBrowser: cookieBrowser ? cookieBrowser.value : "",
-    });
+    await window.videoFinder.startScan(urlInput.value);
   } catch (error) {
     scanStatus.textContent = error.message;
     setScanning(false);
