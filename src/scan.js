@@ -147,6 +147,14 @@ function createScanner({ send, logEvent }) {
     return `${baseName}.mp4`;
   }
 
+  function sanitizeFileName(value) {
+    return String(value || "")
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+  }
+
   function addCandidate(candidate) {
     if (!candidate.url || !isLikelyVideoResource(candidate.url, candidate.contentType)) return null;
 
@@ -160,10 +168,13 @@ function createScanner({ send, logEvent }) {
       statusCode: candidate.statusCode || existing?.statusCode || 0,
       source: candidate.source || existing?.source || "network",
       kind: inferKind(candidate.url, candidate.contentType || existing?.contentType || ""),
-      fileName: fileNameFromUrl(
-        candidate.url,
-        extensionForKind(inferKind(candidate.url, candidate.contentType || existing?.contentType || ""))
-      ),
+      fileName:
+        candidate.fileName ||
+        existing?.fileName ||
+        fileNameFromUrl(
+          candidate.url,
+          extensionForKind(inferKind(candidate.url, candidate.contentType || existing?.contentType || ""))
+        ),
       size: candidate.size || existing?.size || 0,
       detectedAt: existing?.detectedAt || new Date().toISOString(),
     };
@@ -171,6 +182,183 @@ function createScanner({ send, logEvent }) {
     discovered.set(candidate.url, merged);
     send("scan:candidate", merged);
     return merged;
+  }
+
+  // CNTV (央视网) publishes several links for the same video: `hls_url` is plain
+  // HLS, while `enc` / `enc2` / `h5e` are scrambled. The web player always
+  // requests `h5e`, so passive network capture only ever sees a stream whose
+  // video payload no decoder can render (container and duration look fine, every
+  // frame comes out green/black). The official lookup API hands out the plain
+  // link — and the real title — so ask it directly whenever a CNTV player is
+  // present on the page.
+  const CNTV_API = "https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do";
+  const resolvedCntvGuids = new Set();
+
+  function isCntvHost(hostname) {
+    return /(?:^|\.)(?:cntv\.cn|cctv\.com|cctvpic\.com)$/i.test(hostname) || /cntv/i.test(hostname);
+  }
+
+  // CNTV media paths embed the guid, e.g.
+  // /asp/h5e/hls/main/0303000a/3/default/<guid>/main.m3u8
+  function cntvGuidFromUrl(url) {
+    try {
+      const parsed = new URL(url);
+      if (!isCntvHost(parsed.hostname)) return "";
+      const match = parsed.pathname.match(/\/([0-9a-f]{32})(?:\/|$)/i);
+      return match ? match[1].toLowerCase() : "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function collectCntvGuidsFromPage() {
+    if (!scanContents || scanContents.isDestroyed()) return [];
+
+    try {
+      return await scanContents.executeJavaScript(`
+        (() => {
+          const html = document.documentElement.outerHTML;
+          const found = new Set();
+          const patterns = [
+            /videoCenterId["'\\s:=,]+([0-9a-f]{32})/gi,
+            /\\bplay\\(\\s*["']([0-9a-f]{32})["']/gi,
+            /\\bguid["'\\s:=,]+([0-9a-f]{32})/gi,
+            /[?&]pid=([0-9a-f]{32})/gi,
+          ];
+          for (const pattern of patterns) {
+            let match;
+            while ((match = pattern.exec(html)) !== null) found.add(match[1].toLowerCase());
+          }
+          return Array.from(found);
+        })();
+      `);
+    } catch {
+      return [];
+    }
+  }
+
+  // The master playlist sometimes advertises only the lowest rendition even though
+  // higher ones exist as real files. Requesting a bitrate that doesn't exist does
+  // not 404 — the CDN silently serves a copy of the lowest one — so identify real
+  // renditions by the byte size of their first segment and drop the duplicates.
+  const CNTV_PROBE_BITRATES = [450, 850, 1200, 2000, 4000];
+
+  async function headContentLength(url) {
+    const res = await fetch(url, { method: "HEAD", redirect: "follow" });
+    if (!res.ok) return 0;
+    return Number(res.headers.get("content-length")) || 0;
+  }
+
+  async function probeCntvRenditions(masterUrl, title) {
+    const res = await fetch(masterUrl);
+    if (!res.ok) return;
+    const text = await res.text();
+
+    const declared = new Map();
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const abs = new URL(line, masterUrl).toString();
+      const match = abs.match(/\/(\d{3,5})\.m3u8(?:[?#]|$)/);
+      if (match) declared.set(Number(match[1]), abs);
+    }
+    if (declared.size === 0) return;
+
+    const [baseBitrate, baseUrl] = [...declared.entries()][0];
+    const sizeOwners = new Map();
+    const bitrates = [...new Set([...declared.keys(), ...CNTV_PROBE_BITRATES])].sort((a, b) => a - b);
+
+    for (const bitrate of bitrates) {
+      const variantUrl = baseUrl
+        .split(`/${baseBitrate}/`)
+        .join(`/${bitrate}/`)
+        .replace(`/${baseBitrate}.m3u8`, `/${bitrate}.m3u8`);
+      const firstSegment = variantUrl.replace(/[^/]+\.m3u8.*$/, "0.ts");
+
+      let size = 0;
+      try {
+        size = await headContentLength(firstSegment);
+      } catch {
+        continue;
+      }
+      // No segment, or byte-identical to a lower rendition we already accepted.
+      if (!size || sizeOwners.has(size)) continue;
+      sizeOwners.set(size, bitrate);
+
+      // Already reachable by picking the best variant off the master playlist.
+      if (declared.has(bitrate)) continue;
+
+      addCandidate({
+        url: variantUrl,
+        contentType: "application/vnd.apple.mpegurl",
+        source: "cntv-api",
+        fileName: title ? `${title} [${bitrate}k].m3u8` : "",
+      });
+      logEvent("info", "Found unlisted CNTV rendition", { bitrate, segmentBytes: size });
+    }
+  }
+
+  async function resolveCntvGuid(guid) {
+    const res = await fetch(`${CNTV_API}?pid=${guid}`, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        Referer: scanMeta?.pageUrl || "https://www.cctv.com/",
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+    const hlsUrl = data?.hls_url;
+    if (!hlsUrl) return null;
+
+    const title = sanitizeFileName(data?.title);
+    addCandidate({
+      url: hlsUrl,
+      contentType: "application/vnd.apple.mpegurl",
+      source: "cntv-api",
+      fileName: title ? `${title}.m3u8` : "",
+    });
+
+    try {
+      await probeCntvRenditions(hlsUrl, title);
+    } catch (error) {
+      logEvent("debug", "CNTV rendition probe skipped", { error: error.message });
+    }
+
+    return { title: data?.title || "", hlsUrl, protected: data?.is_protected };
+  }
+
+  async function resolveCntvSources() {
+    const guids = new Set(await collectCntvGuidsFromPage());
+    for (const item of discovered.values()) {
+      const guid = cntvGuidFromUrl(item.url);
+      if (guid) guids.add(guid);
+    }
+
+    for (const guid of guids) {
+      if (resolvedCntvGuids.has(guid)) continue;
+      resolvedCntvGuids.add(guid);
+
+      try {
+        const resolved = await resolveCntvGuid(guid);
+        if (!resolved) {
+          logEvent("info", "CNTV API returned no plain HLS link", { guid });
+          continue;
+        }
+        send("scan:log", {
+          level: "info",
+          message: `已从央视网接口取到未加扰源：${resolved.title || guid}`,
+        });
+        logEvent("info", "Resolved CNTV plain HLS source", {
+          guid,
+          title: resolved.title,
+          isProtected: resolved.protected,
+        });
+      } catch (error) {
+        logEvent("warn", "CNTV lookup failed", { guid, error: error.message });
+      }
+    }
   }
 
   async function collectDomCandidates() {
@@ -329,6 +517,7 @@ function createScanner({ send, logEvent }) {
 
     resetScan();
     discovered.clear();
+    resolvedCntvGuids.clear();
     scanMeta = { pageUrl, startedAt: Date.now() };
     logEvent("info", "Starting scan", { pageUrl });
 
@@ -370,9 +559,14 @@ function createScanner({ send, logEvent }) {
     scanContents.on("did-finish-load", async () => {
       send("scan:status", { state: "loaded", pageUrl });
       logEvent("info", "Page loaded", { pageUrl });
-      await collectDomCandidates();
-      setTimeout(collectDomCandidates, 2500);
-      setTimeout(collectDomCandidates, 8000);
+      const sweep = async () => {
+        await collectDomCandidates();
+        await resolveCntvSources();
+      };
+      const safeSweep = () => sweep().catch(() => {});
+      await safeSweep();
+      setTimeout(safeSweep, 2500);
+      setTimeout(safeSweep, 8000);
     });
 
     scanContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
