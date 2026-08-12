@@ -5,9 +5,21 @@ const { delay } = require("./media");
 
 const DOWNLOAD_MAX_RETRIES = 5;
 
-function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStream, send, logEvent }) {
+function createHlsDownloader({
+  makeDownloadHeaders,
+  runFfmpeg,
+  probeVideoParams,
+  downloadFfmpegStream,
+  send,
+  logEvent,
+}) {
   const HLS_MAX_PARALLEL = 6;
   const HLS_KEY_FETCH_RETRIES = 5;
+  // Post-download sanity check: decode this many seconds and fail the task if the
+  // decoder reports more than this many errors (a healthy file reports none).
+  const VERIFY_SECONDS = 20;
+  const VERIFY_ERROR_THRESHOLD = 24;
+  const DECODE_ERROR_PATTERN = /error while decoding MB|concealing \d+ DC|Reference \d+ >= \d+|no frame!|non-existing PPS|decode_slice_header error/;
 
   function parseAttrList(input) {
     const result = {};
@@ -56,10 +68,18 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
     let pendingStreamInf = null;
     let lastByterangeOffset = 0;
     let hasMap = false;
+    let pendingDiscontinuity = false;
+    let discontinuityCount = 0;
 
     for (let raw of lines) {
       const line = raw.trim();
       if (!line) continue;
+
+      if (line === "#EXT-X-DISCONTINUITY") {
+        pendingDiscontinuity = true;
+        discontinuityCount++;
+        continue;
+      }
 
       if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
         mediaSequence = Number(line.split(":")[1]) || 0;
@@ -123,13 +143,15 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
           byterange: pendingByterange,
           key: currentKey,
           sequence: mediaSequence + segments.length,
+          discontinuity: pendingDiscontinuity,
         });
         pendingDuration = 0;
         pendingByterange = null;
+        pendingDiscontinuity = false;
       }
     }
 
-    return { variants, segments, hasMap };
+    return { variants, segments, hasMap, discontinuityCount };
   }
 
   function ivForSegment(segment) {
@@ -139,11 +161,38 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
     return iv;
   }
 
-  async function fetchAsBuffer(url, headers) {
+  // Marks a failure that retrying cannot fix, so the segment loop gives up at once
+  // instead of burning through the full backoff schedule on every segment.
+  function fatalError(message) {
+    const error = new Error(message);
+    error.fatal = true;
+    return error;
+  }
+
+  async function fetchAsBuffer(url, headers, expectRange) {
     const res = await fetch(url, { redirect: "follow", headers });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} fetching ${url}`);
     }
+
+    // A server that ignores our Range header answers 200 with the whole resource.
+    // Accepting that silently would splice a full file in where one slice belongs,
+    // which corrupts the merged stream without any visible failure.
+    if (expectRange) {
+      if (res.status !== 206) {
+        throw fatalError(
+          `Server ignored Range request (HTTP ${res.status}, expected 206) for ${url}`
+        );
+      }
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length !== expectRange.length) {
+        throw fatalError(
+          `Byterange size mismatch for ${url}: got ${buffer.length}, expected ${expectRange.length}`
+        );
+      }
+      return buffer;
+    }
+
     return Buffer.from(await res.arrayBuffer());
   }
 
@@ -154,6 +203,7 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
         return await fetchAsBuffer(url, headers);
       } catch (error) {
         lastError = error;
+        if (error.fatal) break;
         if (attempt === retries) break;
         await delay(400 * Math.pow(2, attempt));
       }
@@ -180,6 +230,22 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
     return bytes;
   }
 
+  // Most HLS segments are PKCS#7 padded, but some sources encrypt block-aligned data
+  // with no padding at all. Stripping a phantom padding block would silently damage
+  // the tail of every segment, so fall back to a raw decrypt when unpadding fails.
+  function decryptSegment(encrypted, keyData, iv) {
+    try {
+      const decipher = crypto.createDecipheriv("aes-128-cbc", keyData, iv);
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    } catch (error) {
+      const decipher = crypto.createDecipheriv("aes-128-cbc", keyData, iv);
+      decipher.setAutoPadding(false);
+      const plain = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+      logEvent("debug", "Segment decrypted without PKCS#7 padding", { error: error.message });
+      return plain;
+    }
+  }
+
   async function downloadHlsSegment(segment, segPath, baseHeaders, keyCache) {
     const keyData = await loadHlsKey(segment.key, baseHeaders, keyCache);
 
@@ -193,17 +259,13 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
     let lastError;
     for (let attempt = 0; attempt <= DOWNLOAD_MAX_RETRIES; attempt++) {
       try {
-        const encrypted = await fetchAsBuffer(segment.url, segHeaders);
-        const plain = keyData
-          ? (() => {
-              const decipher = crypto.createDecipheriv("aes-128-cbc", keyData, ivForSegment(segment));
-              return Buffer.concat([decipher.update(encrypted), decipher.final()]);
-            })()
-          : encrypted;
+        const encrypted = await fetchAsBuffer(segment.url, segHeaders, segment.byterange);
+        const plain = keyData ? decryptSegment(encrypted, keyData, ivForSegment(segment)) : encrypted;
         await fs.promises.writeFile(segPath, plain);
         return plain.length;
       } catch (error) {
         lastError = error;
+        if (error.fatal) break;
         if (attempt === DOWNLOAD_MAX_RETRIES) break;
         logEvent("warn", "HLS segment retrying", {
           url: segment.url,
@@ -219,21 +281,101 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
 
   async function concatTsFiles(segmentPaths, outputPath) {
     const out = fs.createWriteStream(outputPath);
+    // One shared error handler: attaching a fresh listener per segment leaked them
+    // and tripped MaxListenersExceededWarning on playlists with many segments.
+    let writeError = null;
+    out.on("error", (error) => {
+      writeError = error;
+    });
+
     try {
       for (const p of segmentPaths) {
+        if (writeError) throw writeError;
         await new Promise((resolve, reject) => {
           const src = fs.createReadStream(p);
           src.on("error", reject);
           src.on("end", resolve);
-          out.on("error", reject);
           src.pipe(out, { end: false });
         });
       }
     } finally {
-      await new Promise((resolve, reject) => {
-        out.end(() => resolve());
-        out.on("error", reject);
-      });
+      await new Promise((resolve) => out.end(resolve));
+    }
+
+    if (writeError) throw writeError;
+  }
+
+  async function writeConcatList(segmentPaths, listPath) {
+    const body = segmentPaths
+      .map((p) => `file '${p.split(path.sep).join("/").replace(/'/g, "'\\''")}'`)
+      .join("\n");
+    await fs.promises.writeFile(listPath, `${body}\n`, "utf8");
+  }
+
+  // Across an #EXT-X-DISCONTINUITY the encoder may switch resolution, profile or
+  // pixel format. Concatenating those byte-for-byte and remuxing with `-c copy`
+  // keeps only the first segment's parameter sets, so everything after the first
+  // discontinuity decodes into garbage. Probe the segment that starts each
+  // discontinuity and only pay for a re-encode when the parameters actually differ.
+  async function needsReencode(playlist, segmentPaths) {
+    if (!playlist.discontinuityCount) return false;
+    if (!probeVideoParams) return true;
+
+    const boundaries = [0];
+    playlist.segments.forEach((segment, idx) => {
+      if (idx > 0 && segment.discontinuity) boundaries.push(idx);
+    });
+
+    const probed = [];
+    for (const idx of boundaries.slice(0, 8)) {
+      const params = await probeVideoParams(segmentPaths[idx]);
+      if (!params) return true;
+      probed.push(`${params.codec}/${params.profile}/${params.resolution}/${params.pixFmt}`);
+    }
+
+    const mismatch = probed.some((sig) => sig !== probed[0]);
+    logEvent("info", "Checked HLS discontinuity boundaries", {
+      discontinuities: playlist.discontinuityCount,
+      probed,
+      mismatch,
+    });
+    return mismatch;
+  }
+
+  // A remux never fails on damaged video payloads: the container, duration and
+  // resolution all come out right while every frame decodes to green/black. Decode
+  // a slice of the result so those downloads are reported as failures, not successes.
+  async function verifyDecodable(item, filePath) {
+    const result = await runFfmpeg(
+      [
+        "-hide_banner",
+        "-nostats",
+        "-v",
+        "error",
+        "-i",
+        filePath,
+        "-t",
+        String(VERIFY_SECONDS),
+        "-an",
+        "-f",
+        "null",
+        "-",
+      ],
+      item,
+      {
+        filePath,
+        mode: "verify",
+        missingFfmpegIsFatal: true,
+        countPattern: DECODE_ERROR_PATTERN,
+      }
+    );
+
+    const errors = result.matchCount ?? 0;
+    logEvent("info", "Verified HLS output", { filePath, decodeErrors: errors });
+    if (errors > VERIFY_ERROR_THRESHOLD) {
+      throw new Error(
+        `视频轨解码错误过多（前 ${VERIFY_SECONDS} 秒 ${errors} 处），该源可能对视频做了加扰保护，下载到的分片本身无法解码。`
+      );
     }
   }
 
@@ -320,34 +462,83 @@ function createHlsDownloader({ makeDownloadHeaders, runFfmpeg, downloadFfmpegStr
         total: 0,
         filePath,
       });
-      const concatPath = path.join(tempDir, "all.ts");
-      await concatTsFiles(segmentPaths, concatPath);
-      logEvent("info", "Concatenated HLS segments", { concatPath });
-
       send("download:status", { id: item.id, state: "repairing", filePath });
-      await runFfmpeg(
-        [
-          "-hide_banner",
-          "-y",
-          "-nostats",
-          "-i",
-          concatPath,
-          "-c",
-          "copy",
-          "-movflags",
-          "+faststart",
-          "-bsf:a",
-          "aac_adtstoasc",
-          filePath,
-        ],
-        item,
-        { filePath, mode: "remux", missingFfmpegIsFatal: true }
-      );
+
+      if (await needsReencode(playlist, segmentPaths)) {
+        const listPath = path.join(tempDir, "concat.txt");
+        await writeConcatList(segmentPaths, listPath);
+        logEvent("warn", "HLS encoding parameters change across a discontinuity; re-encoding", {
+          discontinuities: playlist.discontinuityCount,
+        });
+
+        await runFfmpeg(
+          [
+            "-hide_banner",
+            "-y",
+            "-nostats",
+            "-progress",
+            "pipe:1",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            listPath,
+            "-fflags",
+            "+genpts",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+            filePath,
+          ],
+          item,
+          { filePath, mode: "reencode", missingFfmpegIsFatal: true }
+        );
+      } else {
+        const concatPath = path.join(tempDir, "all.ts");
+        await concatTsFiles(segmentPaths, concatPath);
+        logEvent("info", "Concatenated HLS segments", { concatPath });
+
+        await runFfmpeg(
+          [
+            "-hide_banner",
+            "-y",
+            "-nostats",
+            "-fflags",
+            "+genpts",
+            "-i",
+            concatPath,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-bsf:a",
+            "aac_adtstoasc",
+            filePath,
+          ],
+          item,
+          { filePath, mode: "remux", missingFfmpegIsFatal: true }
+        );
+      }
 
       const stat = await fs.promises.stat(filePath);
       if (stat.size < 1024) {
         throw new Error(`Output file looks too small (${stat.size} bytes).`);
       }
+
+      send("download:status", { id: item.id, state: "verifying", filePath });
+      await verifyDecodable(item, filePath);
 
       return {
         id: item.id,

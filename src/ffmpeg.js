@@ -89,6 +89,10 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
 
       let stderr = "";
       let outTimeMs = 0;
+      // options.countPattern lets callers tally matching stderr lines (used by the
+      // post-download decode check) without buffering the whole ffmpeg log.
+      let matchCount = 0;
+      let lineTail = "";
 
       child.stdout.on("data", (chunk) => {
         const text = chunk.toString();
@@ -104,8 +108,17 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
       });
 
       child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
+        const text = chunk.toString();
+        stderr += text;
         if (stderr.length > 6000) stderr = stderr.slice(-6000);
+
+        if (options.countPattern) {
+          const lines = (lineTail + text).split(/\r?\n/);
+          lineTail = lines.pop() ?? "";
+          for (const line of lines) {
+            if (options.countPattern.test(line)) matchCount++;
+          }
+        }
       });
 
       child.on("error", (error) => {
@@ -125,12 +138,16 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
       });
 
       child.on("close", (code) => {
+        if (options.countPattern && lineTail && options.countPattern.test(lineTail)) {
+          matchCount++;
+        }
+
         if (code === 0) {
           logEvent("info", "ffmpeg completed", {
             mode: options.mode,
             filePath: options.filePath,
           });
-          resolve({ outTimeMs });
+          resolve({ outTimeMs, matchCount });
         } else {
           const detail = stderr.split("\n").filter(Boolean).slice(-4).join(" ");
           logEvent("error", "ffmpeg failed", {
@@ -140,6 +157,37 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
           });
           reject(new Error(detail || `ffmpeg exited with code ${code}.`));
         }
+      });
+    });
+  }
+
+  // Reads the video parameters of a local file. `ffmpeg -i` without an output exits
+  // non-zero by design, so this ignores the exit code and only parses stderr.
+  function probeVideoParams(filePath) {
+    return new Promise((resolve) => {
+      const child = spawn(ffmpegPath(), ["-hide_banner", "-i", filePath], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+        if (stderr.length > 20000) stderr = stderr.slice(-20000);
+      });
+
+      child.on("error", () => resolve(null));
+      child.on("close", () => {
+        const line = stderr.split(/\r?\n/).find((l) => /Stream #\d+:\d+.*: Video: /.test(l));
+        if (!line) {
+          resolve(null);
+          return;
+        }
+
+        const codec = line.match(/: Video: ([^\s,(]+)/)?.[1] ?? "";
+        const profile = line.match(/: Video: [^\s,(]+ \(([^)]+)\)/)?.[1] ?? "";
+        const resolution = line.match(/\b(\d{2,5}x\d{2,5})\b/)?.[1] ?? "";
+        const pixFmt = line.match(/\b(yuv\w+|gbr\w+|nv\d+\w*)\b/)?.[1] ?? "";
+        resolve({ codec, profile, resolution, pixFmt });
       });
     });
   }
@@ -207,6 +255,7 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
     safeFfmpegArgs,
     runFfmpeg,
     remuxMp4File,
+    probeVideoParams,
     ffmpegHeaders,
     downloadFfmpegStream,
   };

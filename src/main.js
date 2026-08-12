@@ -67,6 +67,7 @@ const httpDownloader = createHttpDownloader({
 const hlsDownloader = createHlsDownloader({
   makeDownloadHeaders: scanner.makeDownloadHeaders,
   runFfmpeg: ffmpeg.runFfmpeg,
+  probeVideoParams: ffmpeg.probeVideoParams,
   downloadFfmpegStream: ffmpeg.downloadFfmpegStream,
   send,
   logEvent,

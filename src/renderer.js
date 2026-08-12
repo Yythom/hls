@@ -455,6 +455,18 @@ window.videoFinder.onDownloadProgress((payload) => {
     return;
   }
 
+  if (payload.mode === "reencode") {
+    downloadState.textContent = "Re-encoding (stream changes mid-way)";
+    progressBar.style.width = "88%";
+    return;
+  }
+
+  if (payload.mode === "verify") {
+    downloadState.textContent = "Verifying video";
+    progressBar.style.width = "96%";
+    return;
+  }
+
   if (payload.total > 0) {
     const percent = Math.min((payload.received / payload.total) * 100, 100);
     progressBar.style.width = `${percent}%`;
@@ -467,6 +479,7 @@ window.videoFinder.onDownloadProgress((payload) => {
 window.videoFinder.onDownloadStatus((payload) => {
   if (payload.state === "downloading") downloadState.textContent = "Downloading";
   if (payload.state === "repairing") downloadState.textContent = "Repairing MP4";
+  if (payload.state === "verifying") downloadState.textContent = "Verifying video";
   if (payload.state === "error") downloadState.textContent = "Failed";
   if (payload.state === "done") downloadState.textContent = "Done";
 });
