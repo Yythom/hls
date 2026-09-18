@@ -889,6 +889,124 @@ button.secondary:hover {
   background: #ffffff;
 }
 
+.trim-card + .trim-card {
+  margin-top: 16px;
+}
+
+.trim-section[hidden],
+.online-meta[hidden] {
+  display: none;
+}
+
+.trim-row label.online-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.online-playlist-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.online-playlist-tools button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.online-playlist-tools select {
+  border: 1px solid #cfd2cc;
+  border-radius: 6px;
+  padding: 4px 6px;
+  background: #fff;
+}
+
+.online-entry {
+  grid-template-columns: auto 44px minmax(0, 1fr) auto;
+}
+
+.online-entry-index {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--muted);
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.queue-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.queue-item-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item-state {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item.is-error .queue-item-state {
+  color: #b42318;
+  white-space: normal;
+}
+
+.queue-item.is-done .queue-item-state {
+  color: var(--accent);
+}
+
+.queue-item .progress {
+  grid-column: 1 / -1;
+  height: 5px;
+}
+
+.queue-item.is-done .progress div {
+  background: var(--accent);
+}
+
+.queue-item-actions {
+  display: flex;
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  gap: 6px;
+}
+
+.queue-item-actions button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .info-drop {
   padding: 18px;
   border: 1.5px dashed var(--line);

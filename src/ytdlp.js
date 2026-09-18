@@ -201,13 +201,15 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     return error;
   }
 
-  async function listFormats(payload) {
+  // Run `yt-dlp -J` and parse its JSON. `--flat-playlist` keeps playlist URLs
+  // cheap: entries come back as bare references instead of each being fully
+  // extracted (a 700-part course would otherwise take minutes).
+  async function probeJson(payload, playlistArgs) {
     const url = typeof payload === "string" ? payload : payload?.url;
     const cookiesFromBrowser = typeof payload === "object" ? payload?.cookiesFromBrowser : "";
     if (!url) throw new Error("URL is required.");
-    logEvent("info", "yt-dlp listing formats", { url, cookiesFromBrowser });
 
-    const args = ["-J", "--no-warnings", "--no-playlist"];
+    const args = ["-J", "--no-warnings", "--flat-playlist", ...playlistArgs];
     const cookies = await prepareCookieSpec(cookiesFromBrowser);
     if (cookies.spec) {
       args.push("--cookies-from-browser", cookies.spec);
@@ -228,12 +230,42 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       await cookies.release();
     }
 
-    let json;
     try {
-      json = JSON.parse(stdout);
+      return { url, json: JSON.parse(stdout) };
     } catch (error) {
       throw new Error("解析 yt-dlp 输出失败：" + error.message);
     }
+  }
+
+  function summarizePlaylist(url, json) {
+    const entries = (json.entries || []).filter(Boolean).map((e, i) => {
+      const index = i + 1;
+      const direct = [e.url, e.webpage_url].find((u) => /^https?:\/\//i.test(u || ""));
+      return {
+        index,
+        title: e.title || "",
+        duration: e.duration || 0,
+        uploader: e.uploader || e.channel || "",
+        // Entries without a standalone URL are fetched as item N of the list.
+        url: direct || url,
+        playlistItem: direct ? 0 : index,
+      };
+    });
+    return {
+      isPlaylist: true,
+      title: json.title || "",
+      uploader: json.uploader || json.channel || "",
+      webpageUrl: json.webpage_url || url,
+      extractor: json.extractor_key || json.extractor || "",
+      entries,
+    };
+  }
+
+  async function listFormats(payload) {
+    logEvent("info", "yt-dlp listing formats", { url: payload?.url || payload });
+    const { url, json } = await probeJson(payload, ["--no-playlist"]);
+    // A pure playlist URL (no single video in it) is a playlist regardless.
+    if (json._type === "playlist") return summarizePlaylist(url, json);
 
     const formats = (json.formats || [])
       .filter((f) => f.format_id && f.protocol !== "mhtml")
@@ -250,6 +282,16 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     };
   }
 
+  // Expand a URL as a playlist / collection / multi-part video.
+  async function listPlaylist(payload) {
+    logEvent("info", "yt-dlp listing playlist", { url: payload?.url || payload });
+    const { url, json } = await probeJson(payload, ["--yes-playlist"]);
+    if (json._type !== "playlist") {
+      throw new Error("该链接不是播放列表 / 合集（只有单个视频），请取消勾选后解析");
+    }
+    return summarizePlaylist(url, json);
+  }
+
   async function pickOutput(options) {
     const ext = options?.ext || "mp4";
     const suggested = options?.suggestedName || `download-${Date.now()}.${ext}`;
@@ -262,26 +304,48 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     return { filePath: result.filePath };
   }
 
-  let activeDlpSignal = null;
+  async function pickDir() {
+    const result = await dialog.showOpenDialog(getMainWindow(), {
+      title: "选择保存文件夹",
+      defaultPath: app.getPath("downloads"),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || !result.filePaths[0]) return { canceled: true };
+    return { dirPath: result.filePaths[0] };
+  }
 
-  async function download(payload) {
-    const { url, format, output, mergeFormat } = payload || {};
+  const AUDIO_FORMATS = new Set(["mp3", "m4a", "aac", "flac", "wav", "opus", "vorbis"]);
+  let printFileSeq = 0;
+
+  // Download one item. Either `output` (an exact file path) or `outputDir`
+  // (+ optional `namePrefix`, letting yt-dlp name the file from the title) must
+  // be given. `playlistItem` downloads that 1-based entry of `url` as a
+  // playlist, for entries yt-dlp exposes no standalone URL for.
+  async function runDownload(payload, { signal, onProgress } = {}) {
+    const { url, format, output, outputDir, mergeFormat, playlistItem } = payload || {};
     if (!url) throw new Error("URL is required.");
-    if (!output) throw new Error("Output path is required.");
+    if (!output && !outputDir) throw new Error("Output path is required.");
 
-    const id = `dlp-${Date.now()}`;
-    send("dlp:status", { id, state: "running" });
-    logEvent("info", "yt-dlp downloading", { url, format, output });
+    logEvent("info", "yt-dlp downloading", { url, format, output, outputDir, playlistItem });
 
-    const ext = path.extname(output).replace(/^\./, "").toLowerCase() || "mp4";
     const concurrency = Number(payload?.concurrency) > 0 ? Number(payload.concurrency) : 8;
     // Audio-only quick extraction (e.g. download as MP3).
-    const AUDIO_FORMATS = new Set(["mp3", "m4a", "aac", "flac", "wav", "opus", "vorbis"]);
     const audioFormat = AUDIO_FORMATS.has(String(payload?.audioFormat || "").toLowerCase())
       ? String(payload.audioFormat).toLowerCase()
       : "";
+    // An exact path is still parsed as an output template; escape its `%`.
+    const template = output
+      ? output.replace(/%/g, "%%")
+      : path.join(outputDir, `${String(payload?.namePrefix || "").replace(/%/g, "%%")}%(title).150B.%(ext)s`);
+    const ext = output ? path.extname(output).replace(/^\./, "").toLowerCase() || "mp4" : "mp4";
+    // yt-dlp reports the final path (after merge / audio extraction) here.
+    const printFile = path.join(
+      app.getPath("temp"),
+      `vf-dlp-${process.pid}-${Date.now()}-${++printFileSeq}.txt`
+    );
+
     const args = [
-      "--no-playlist",
+      ...(playlistItem ? ["--yes-playlist", "--playlist-items", String(playlistItem)] : ["--no-playlist"]),
       "--no-warnings",
       "--no-mtime",
       "--newline",
@@ -300,8 +364,11 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       "10",
       "-f",
       audioFormat ? "ba/b" : format || "bv*+ba/b",
+      "--print-to-file",
+      "after_move:filepath",
+      printFile,
       "-o",
-      output,
+      template,
     ];
     if (audioFormat) {
       // Extract the audio track and transcode to the requested container.
@@ -324,9 +391,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     }
     args.push(url);
 
-    const signal = {};
-    activeDlpSignal = signal;
-
+    const progress = onProgress || (() => {});
     try {
       await runYtDlp(args, {
         signal,
@@ -334,8 +399,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
           if (!line) return;
           const dl = line.match(/^\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)(?:\s+at\s+([\d.]+\s*\w+\/s))?(?:\s+ETA\s+([\d:]+))?/);
           if (dl) {
-            send("dlp:progress", {
-              id,
+            progress({
               percent: Number(dl[1]),
               total: dl[2],
               speed: dl[3] || "",
@@ -345,46 +409,31 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
             return;
           }
           if (/^\[Merger\]/.test(line)) {
-            send("dlp:progress", { id, phase: "merging" });
+            progress({ phase: "merging" });
             return;
           }
           if (/^\[ExtractAudio\]/.test(line) || /^\[ffmpeg\]/.test(line)) {
-            send("dlp:progress", { id, phase: "post-processing" });
-            return;
+            progress({ phase: "post-processing" });
           }
         },
       });
 
-      if (!fs.existsSync(output)) {
-        const dir = path.dirname(output);
-        const stem = path.parse(output).name;
-        const candidates = (await fs.promises.readdir(dir)).filter((f) => f.startsWith(stem));
-        if (candidates.length > 0) {
-          const found = path.join(dir, candidates[0]);
-          send("dlp:status", { id, state: "done", filePath: found });
-          return { ok: true, filePath: found };
-        }
+      const printed = await fs.promises.readFile(printFile, "utf8").catch(() => "");
+      const filePath = printed.split(/\r?\n/).filter(Boolean).pop() || output || "";
+      if (!filePath || !fs.existsSync(filePath)) {
         throw new Error("下载完成但未找到输出文件");
       }
-
-      const stat = await fs.promises.stat(output);
-      send("dlp:status", { id, state: "done", filePath: output });
-      logEvent("info", "yt-dlp completed", { output, size: stat.size });
-      return { ok: true, filePath: output, size: stat.size };
+      const stat = await fs.promises.stat(filePath);
+      logEvent("info", "yt-dlp completed", { filePath, size: stat.size });
+      return { ok: true, filePath, size: stat.size };
     } catch (rawError) {
       const error = describeCookieError(rawError, payload?.cookiesFromBrowser);
-      send("dlp:status", { id, state: "error", message: error.message });
-      logEvent("error", "yt-dlp failed", { error: error.message });
+      logEvent("error", "yt-dlp failed", { url, error: error.message });
       throw error;
     } finally {
-      activeDlpSignal = null;
+      await fs.promises.rm(printFile, { force: true }).catch(() => {});
       await cookies.release();
     }
-  }
-
-  async function cancel() {
-    if (activeDlpSignal?.kill) activeDlpSignal.kill();
-    return { ok: true };
   }
 
   function compareYtDlpVersions(a, b) {
@@ -546,9 +595,10 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
 
   return {
     listFormats,
+    listPlaylist,
     pickOutput,
-    download,
-    cancel,
+    pickDir,
+    runDownload,
     checkUpdate,
     update,
     supportedCookieBrowsers: () => Array.from(SUPPORTED_COOKIE_BROWSERS),

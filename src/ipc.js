@@ -18,7 +18,7 @@ const IMAGE_EXTS = [
   "gif",
 ];
 
-function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, send, logEvent }) {
+function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, dlpQueue, send, logEvent }) {
   ipcMain.handle("scan:start", async (_event, payload) => {
     const url = payload && typeof payload === "object" ? payload.url : payload;
     return scanner.startScan(url);
@@ -157,8 +157,16 @@ function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, h
   });
   ipcMain.handle("dlp:listFormats", async (_event, payload) => ytdlp.listFormats(payload));
   ipcMain.handle("dlp:pickOutput", async (_event, options) => ytdlp.pickOutput(options));
-  ipcMain.handle("dlp:download", async (_event, payload) => ytdlp.download(payload));
-  ipcMain.handle("dlp:cancel", async () => ytdlp.cancel());
+  ipcMain.handle("dlp:listPlaylist", async (_event, payload) => ytdlp.listPlaylist(payload));
+  ipcMain.handle("dlp:pickDir", async () => ytdlp.pickDir());
+  ipcMain.handle("dlp:queueAdd", async (_event, jobs) => dlpQueue.enqueue(jobs));
+  ipcMain.handle("dlp:queueCancel", async (_event, id) => dlpQueue.cancel(id));
+  ipcMain.handle("dlp:queueCancelAll", async () => dlpQueue.cancelAll());
+  ipcMain.handle("dlp:queueRetry", async (_event, id) => dlpQueue.retry(id));
+  ipcMain.handle("dlp:queueRemove", async (_event, id) => dlpQueue.remove(id));
+  ipcMain.handle("dlp:queueClearFinished", async () => dlpQueue.clearFinished());
+  ipcMain.handle("dlp:queueSetParallel", async (_event, n) => dlpQueue.setParallel(n));
+  ipcMain.handle("dlp:queueList", async () => dlpQueue.list());
   ipcMain.handle("dlp:checkUpdate", async () => ytdlp.checkUpdate());
   ipcMain.handle("dlp:update", async () => ytdlp.update());
 

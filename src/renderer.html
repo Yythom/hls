@@ -921,6 +921,17 @@
               </div>
             </div>
 
+            <div class="trim-row">
+              <label></label>
+              <div class="trim-row-body">
+                <label class="online-check">
+                  <input id="onlineAsPlaylist" type="checkbox" />
+                  作为播放列表 / 合集 / 多 P 解析
+                </label>
+                <span class="trim-muted">批量下载列表中的多个视频</span>
+              </div>
+            </div>
+
             <div id="onlineMeta" class="online-meta" hidden>
               <img id="onlineThumb" alt="" />
               <div class="online-meta-text">
@@ -944,6 +955,31 @@
                 选择「合并」可让 yt-dlp 自动选最佳画质 + 最佳音频并合成
                 MP4。其他选项可手动指定单个流。
               </p>
+            </div>
+
+            <div class="trim-section" id="onlinePlaylistBox" hidden>
+              <div class="trim-section-head">
+                <h3 id="onlinePlaylistTitle">播放列表</h3>
+                <div class="online-playlist-tools">
+                  <span id="onlinePlaylistCount" class="trim-muted"></span>
+                  <button id="onlinePlaylistAll" type="button" class="secondary">全选</button>
+                  <button id="onlinePlaylistNone" type="button" class="secondary">全不选</button>
+                </div>
+              </div>
+              <div id="onlinePlaylistEntries" class="online-formats"></div>
+              <div class="trim-row">
+                <label>画质</label>
+                <div class="trim-row-body">
+                  <select id="onlinePlaylistQuality">
+                    <option value="best">最佳画质（合并 MP4）</option>
+                    <option value="1080">不高于 1080P</option>
+                    <option value="720">不高于 720P</option>
+                    <option value="480">不高于 480P</option>
+                    <option value="mp3">仅音频（MP3）</option>
+                    <option value="m4a">仅音频（M4A）</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             <div class="trim-row">
@@ -988,35 +1024,43 @@
               <div class="trim-row-body">
                 <button id="onlinePickOutput" type="button">另存为…</button>
                 <span id="onlineOutputName" class="trim-muted">未选择</span>
+                <button id="onlinePickDir" type="button" hidden>选择文件夹…</button>
+                <span id="onlineDirName" class="trim-muted" hidden>未选择</span>
               </div>
             </div>
 
             <div class="trim-actions">
-              <button id="onlineRun" type="button">开始下载</button>
-              <button
-                id="onlineCancel"
-                type="button"
-                class="secondary"
-                disabled
-              >
-                取消
-              </button>
-              <button id="onlineReveal" type="button" class="secondary" hidden>
-                打开文件位置
-              </button>
+              <button id="onlineRun" type="button">加入下载队列</button>
             </div>
 
             <div class="trim-status">
               <span id="onlineState">Idle</span>
-              <div class="progress">
-                <div id="onlineProgress"></div>
-              </div>
             </div>
 
             <p class="trim-help">
               已内置 <code>yt-dlp</code>。如需自定义版本，可设置
               <code>YT_DLP_PATH</code> 环境变量后启动 App。
             </p>
+          </div>
+
+          <div class="trim-card">
+            <div class="trim-section-head">
+              <h3>下载队列 <span id="queueSummary" class="trim-muted"></span></h3>
+              <div class="online-playlist-tools">
+                <label class="trim-muted" for="queueParallel">同时下载</label>
+                <select id="queueParallel">
+                  <option value="1">1</option>
+                  <option value="2" selected>2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                </select>
+                <button id="queueCancelAll" type="button" class="secondary">全部取消</button>
+                <button id="queueClearDone" type="button" class="secondary">清除已结束</button>
+              </div>
+            </div>
+            <div id="queueList" class="queue-list">
+              <p class="queue-empty trim-muted">队列为空。解析视频后点击「加入下载队列」。</p>
+            </div>
           </div>
         </section>
       </div>

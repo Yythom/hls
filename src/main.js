@@ -9,6 +9,7 @@ const { createHlsDownloader } = require("./hls");
 const { createTools } = require("./tools");
 const { createMediaInfo } = require("./media-info");
 const { createYtdlp } = require("./ytdlp");
+const { createDlpQueue } = require("./dlp-queue");
 const { registerIpc } = require("./ipc");
 
 let mainWindow;
@@ -81,6 +82,7 @@ const tools = createTools({
 });
 const mediaInfo = createMediaInfo({ ffmpegPath: ffmpeg.ffmpegPath });
 const ytdlp = createYtdlp({ app, dialog, getMainWindow, ffmpegPath: ffmpeg.ffmpegPath, send, logEvent });
+const dlpQueue = createDlpQueue({ ytdlp, send, logEvent });
 const login = createLogin({ app, BrowserWindow, session, getMainWindow, logEvent });
 
 registerIpc({
@@ -93,6 +95,7 @@ registerIpc({
   tools,
   mediaInfo,
   ytdlp,
+  dlpQueue,
   send,
   logEvent,
 });
@@ -107,4 +110,5 @@ app.on("activate", () => {
 app.on("before-quit", () => {
   scanner.resetScan();
   login.closeActive();
+  dlpQueue.cancelAll();
 });

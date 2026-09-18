@@ -1522,10 +1522,22 @@ const onlineKindFilter = document.querySelector("#onlineKindFilter");
 const onlinePickOutput = document.querySelector("#onlinePickOutput");
 const onlineOutputName = document.querySelector("#onlineOutputName");
 const onlineRun = document.querySelector("#onlineRun");
-const onlineCancel = document.querySelector("#onlineCancel");
-const onlineReveal = document.querySelector("#onlineReveal");
 const onlineState = document.querySelector("#onlineState");
-const onlineProgress = document.querySelector("#onlineProgress");
+const onlineAsPlaylist = document.querySelector("#onlineAsPlaylist");
+const onlinePlaylistBox = document.querySelector("#onlinePlaylistBox");
+const onlinePlaylistTitle = document.querySelector("#onlinePlaylistTitle");
+const onlinePlaylistCount = document.querySelector("#onlinePlaylistCount");
+const onlinePlaylistEntries = document.querySelector("#onlinePlaylistEntries");
+const onlinePlaylistAll = document.querySelector("#onlinePlaylistAll");
+const onlinePlaylistNone = document.querySelector("#onlinePlaylistNone");
+const onlinePlaylistQuality = document.querySelector("#onlinePlaylistQuality");
+const onlinePickDir = document.querySelector("#onlinePickDir");
+const onlineDirName = document.querySelector("#onlineDirName");
+const queueList = document.querySelector("#queueList");
+const queueSummary = document.querySelector("#queueSummary");
+const queueParallel = document.querySelector("#queueParallel");
+const queueCancelAll = document.querySelector("#queueCancelAll");
+const queueClearDone = document.querySelector("#queueClearDone");
 const onlineCookies = document.querySelector("#onlineCookies");
 const onlineLogin = document.querySelector("#onlineLogin");
 const onlineLoginClear = document.querySelector("#onlineLoginClear");
@@ -1606,9 +1618,11 @@ refreshYtDlpVersion();
 
 const online = {
   meta: null,
+  // Set instead of `meta` when the URL resolved to a playlist.
+  playlist: null,
   selectedFormatId: "auto",
   output: null,
-  running: false,
+  outputDir: null,
   // Netscape cookie jar produced by the in-app login window, plus the UA that
   // was used to obtain it (sites tie sessions to the UA).
   cookiesFile: "",
@@ -1733,15 +1747,6 @@ function sanitizeFilename(name) {
   return (name || "video").replace(/[\/\\?%*:|"<>]/g, "_").slice(0, 120) || "video";
 }
 
-function setOnlineRunning(running) {
-  online.running = running;
-  onlineRun.disabled = running;
-  onlineFetch.disabled = running;
-  onlineCancel.disabled = !running;
-  onlinePickOutput.disabled = running;
-  onlineUrl.disabled = running;
-}
-
 // When set, the "提取音频" option is selected; value is the target audio ext.
 function chosenAudioFormat() {
   if (online.selectedFormatId !== "audio-extract") return "";
@@ -1861,6 +1866,99 @@ if (onlineKindFilter) {
   onlineKindFilter.addEventListener("change", renderFormats);
 }
 
+// Toggle the output controls between "save one file" and "save into a folder".
+function setOnlineMode(mode) {
+  const playlist = mode === "playlist";
+  onlineMeta.hidden = mode !== "single";
+  onlineFormatsBox.hidden = mode !== "single";
+  onlinePlaylistBox.hidden = !playlist;
+  onlinePickOutput.hidden = playlist;
+  onlineOutputName.hidden = playlist;
+  onlinePickDir.hidden = !playlist;
+  onlineDirName.hidden = !playlist;
+}
+
+function showSingleMeta(meta) {
+  online.meta = meta;
+  online.playlist = null;
+  onlineTitle.textContent = meta.title || "(无标题)";
+  const sub = [];
+  if (meta.uploader) sub.push(meta.uploader);
+  if (meta.duration) sub.push(formatDurationDisplay(meta.duration));
+  if (meta.extractor) sub.push(meta.extractor);
+  onlineSubtitle.textContent = sub.join(" · ");
+  if (meta.thumbnail) {
+    onlineThumb.src = meta.thumbnail;
+    onlineThumb.hidden = false;
+  } else {
+    onlineThumb.removeAttribute("src");
+    onlineThumb.hidden = true;
+  }
+  setOnlineMode("single");
+  renderFormats();
+  onlineState.textContent = `共 ${meta.formats.length} 个格式可选`;
+}
+
+function playlistEntryTitle(entry) {
+  return entry.title || `${online.playlist?.title || "视频"} P${entry.index}`;
+}
+
+function updatePlaylistCount() {
+  const boxes = onlinePlaylistEntries.querySelectorAll("input[type='checkbox']");
+  const checked = [...boxes].filter((b) => b.checked).length;
+  onlinePlaylistCount.textContent = `已选 ${checked} / ${boxes.length}`;
+}
+
+function showPlaylist(playlist) {
+  online.playlist = playlist;
+  online.meta = null;
+  onlinePlaylistTitle.textContent = playlist.title || "播放列表";
+  const rows = playlist.entries.map((entry) => {
+    const row = document.createElement("label");
+    row.className = "online-format online-entry";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = true;
+    box.value = String(entry.index);
+    const index = document.createElement("span");
+    index.className = "online-entry-index";
+    index.textContent = `#${entry.index}`;
+    const main = document.createElement("span");
+    main.className = "online-format-main";
+    const title = document.createElement("strong");
+    title.textContent = entry.title || `P${entry.index}`;
+    main.append(title);
+    if (entry.uploader) {
+      const sub = document.createElement("span");
+      sub.className = "trim-muted";
+      sub.textContent = entry.uploader;
+      main.append(sub);
+    }
+    const dur = document.createElement("span");
+    dur.className = "online-format-size trim-muted";
+    dur.textContent = entry.duration ? formatDurationDisplay(entry.duration) : "";
+    row.append(box, index, main, dur);
+    return row;
+  });
+  onlinePlaylistEntries.replaceChildren(...rows);
+  setOnlineMode("playlist");
+  updatePlaylistCount();
+  const noTitles = playlist.entries.every((e) => !e.title);
+  onlineState.textContent =
+    `共 ${playlist.entries.length} 项` + (noTitles ? "（该站点列表不含分集标题，文件名在下载时确定）" : "");
+}
+
+function setPlaylistChecked(checked) {
+  onlinePlaylistEntries.querySelectorAll("input[type='checkbox']").forEach((b) => {
+    b.checked = checked;
+  });
+  updatePlaylistCount();
+}
+
+onlinePlaylistEntries?.addEventListener("change", updatePlaylistCount);
+onlinePlaylistAll?.addEventListener("click", () => setPlaylistChecked(true));
+onlinePlaylistNone?.addEventListener("click", () => setPlaylistChecked(false));
+
 if (onlineFetch) {
   onlineFetch.addEventListener("click", async () => {
     const url = onlineUrl.value.trim();
@@ -1870,32 +1968,22 @@ if (onlineFetch) {
     }
     const cookies = await resolveCookieOptions(url);
     if (!cookies) return;
-    onlineState.textContent = "解析中…";
-    onlineMeta.hidden = true;
-    onlineFormatsBox.hidden = true;
-    onlineProgress.style.width = "0%";
-    onlineReveal.hidden = true;
+    const asPlaylist = !!onlineAsPlaylist?.checked;
+    onlineState.textContent = asPlaylist ? "解析列表中…" : "解析中…";
+    setOnlineMode("none");
+    online.meta = null;
+    online.playlist = null;
     onlineFetch.disabled = true;
     try {
-      const meta = await window.videoFinder.dlpListFormats({ url, ...cookies });
-      online.meta = meta;
-      onlineTitle.textContent = meta.title || "(无标题)";
-      const sub = [];
-      if (meta.uploader) sub.push(meta.uploader);
-      if (meta.duration) sub.push(formatDurationDisplay(meta.duration));
-      if (meta.extractor) sub.push(meta.extractor);
-      onlineSubtitle.textContent = sub.join(" · ");
-      if (meta.thumbnail) {
-        onlineThumb.src = meta.thumbnail;
-        onlineThumb.hidden = false;
+      const result = asPlaylist
+        ? await window.videoFinder.dlpListPlaylist({ url, ...cookies })
+        : await window.videoFinder.dlpListFormats({ url, ...cookies });
+      if (result.isPlaylist) {
+        if (result.entries.length === 0) throw new Error("列表为空");
+        showPlaylist(result);
       } else {
-        onlineThumb.removeAttribute("src");
-        onlineThumb.hidden = true;
+        showSingleMeta(result);
       }
-      onlineMeta.hidden = false;
-      onlineFormatsBox.hidden = false;
-      renderFormats();
-      onlineState.textContent = `共 ${meta.formats.length} 个格式可选`;
     } catch (error) {
       onlineState.textContent = `解析失败：${error.message}`;
     } finally {
@@ -1904,18 +1992,103 @@ if (onlineFetch) {
   });
 }
 
-if (onlinePickOutput) {
-  onlinePickOutput.addEventListener("click", async () => {
-    const ext = chosenFormatExt();
-    const stem = sanitizeFilename(online.meta?.title);
-    const result = await window.videoFinder.dlpPickOutput({
-      ext,
-      suggestedName: `${stem}.${ext}`,
-    });
-    if (!result || result.canceled) return;
-    online.output = result.filePath;
-    onlineOutputName.textContent = result.filePath;
+async function pickSingleOutput() {
+  const ext = chosenFormatExt();
+  const stem = sanitizeFilename(online.meta?.title);
+  const result = await window.videoFinder.dlpPickOutput({
+    ext,
+    suggestedName: `${stem}.${ext}`,
   });
+  if (!result || result.canceled) return false;
+  online.output = result.filePath;
+  onlineOutputName.textContent = result.filePath;
+  return true;
+}
+
+async function pickPlaylistDir() {
+  const result = await window.videoFinder.dlpPickDir();
+  if (!result || result.canceled) return false;
+  online.outputDir = result.dirPath;
+  onlineDirName.textContent = result.dirPath;
+  return true;
+}
+
+onlinePickOutput?.addEventListener("click", pickSingleOutput);
+onlinePickDir?.addEventListener("click", pickPlaylistDir);
+
+// Quality preset -> yt-dlp format selection for every playlist entry.
+function playlistFormatOptions() {
+  const q = onlinePlaylistQuality?.value || "best";
+  if (q === "mp3" || q === "m4a") return { format: "", audioFormat: q };
+  if (q === "best") return { format: "bv*+ba/b", audioFormat: "" };
+  const h = Number(q);
+  return { format: `bv*[height<=${h}]+ba/b[height<=${h}]/bv*+ba/b`, audioFormat: "" };
+}
+
+async function enqueuePlaylist(cookies) {
+  const picked = new Set(
+    [...onlinePlaylistEntries.querySelectorAll("input[type='checkbox']:checked")].map((b) => Number(b.value))
+  );
+  const entries = online.playlist.entries.filter((e) => picked.has(e.index));
+  if (entries.length === 0) {
+    onlineState.textContent = "请至少勾选一项";
+    return;
+  }
+  if (!online.outputDir && !(await pickPlaylistDir())) {
+    onlineState.textContent = "请先选择保存文件夹";
+    return;
+  }
+  const pad = String(online.playlist.entries.length).length;
+  const { format, audioFormat } = playlistFormatOptions();
+  const concurrency = Number(onlineConcurrency?.value) || 8;
+  const jobs = entries.map((entry) => ({
+    title: playlistEntryTitle(entry),
+    url: entry.url,
+    playlistItem: entry.playlistItem || 0,
+    outputDir: online.outputDir,
+    // Index prefix keeps files in list order and avoids same-title collisions.
+    namePrefix: `${String(entry.index).padStart(pad, "0")} - `,
+    format,
+    audioFormat,
+    concurrency,
+    ...cookies,
+  }));
+  const res = await window.videoFinder.dlpQueueAdd(jobs);
+  onlineState.textContent = `已加入队列 ${res.ids.length} 项`;
+}
+
+async function enqueueSingle(url, cookies) {
+  if (!online.meta) {
+    onlineState.textContent = "请先点击「解析」";
+    return;
+  }
+  if (!online.output && !(await pickSingleOutput())) {
+    onlineState.textContent = "请先选择保存位置";
+    return;
+  }
+  let format = "bv*+ba/b";
+  if (
+    online.selectedFormatId &&
+    online.selectedFormatId !== "auto" &&
+    online.selectedFormatId !== "audio-extract"
+  ) {
+    format = online.selectedFormatId;
+  }
+  await window.videoFinder.dlpQueueAdd([
+    {
+      title: online.meta.title || url,
+      url,
+      format,
+      audioFormat: chosenAudioFormat(),
+      output: online.output,
+      concurrency: Number(onlineConcurrency?.value) || 8,
+      ...cookies,
+    },
+  ]);
+  onlineState.textContent = "已加入队列";
+  // The next download must not silently overwrite this one's file.
+  online.output = null;
+  onlineOutputName.textContent = "未选择";
 }
 
 if (onlineRun) {
@@ -1925,84 +2098,166 @@ if (onlineRun) {
       onlineState.textContent = "请输入视频 URL";
       return;
     }
-    if (!online.output) {
-      onlineState.textContent = "请先选择保存位置";
-      return;
-    }
     const cookies = await resolveCookieOptions(url);
     if (!cookies) return;
-    setOnlineRunning(true);
-    onlineState.textContent = "启动中";
-    onlineProgress.style.width = "0%";
-    onlineReveal.hidden = true;
-
-    const audioFormat = chosenAudioFormat();
-
-    let format = "bv*+ba/b";
-    if (
-      online.selectedFormatId &&
-      online.selectedFormatId !== "auto" &&
-      online.selectedFormatId !== "audio-extract"
-    ) {
-      format = online.selectedFormatId;
-    }
-
+    onlineRun.disabled = true;
     try {
-      const result = await window.videoFinder.dlpDownload({
-        url,
-        format,
-        audioFormat,
-        output: online.output,
-        ...cookies,
-        concurrency: Number(onlineConcurrency?.value) || 8,
-      });
-      onlineState.textContent = `完成${result.size ? ` · ${formatBytes(result.size)}` : ""}`;
-      onlineProgress.style.width = "100%";
-      online.output = result.filePath || online.output;
-      onlineReveal.hidden = false;
+      if (online.playlist) await enqueuePlaylist(cookies);
+      else await enqueueSingle(url, cookies);
     } catch (error) {
-      onlineState.textContent = `失败：${error.message}`;
+      onlineState.textContent = `加入队列失败：${error.message}`;
     } finally {
-      setOnlineRunning(false);
+      onlineRun.disabled = false;
     }
   });
 }
 
-if (onlineCancel) {
-  onlineCancel.addEventListener("click", async () => {
-    await window.videoFinder.dlpCancel();
-    onlineState.textContent = "正在取消…";
-  });
-}
+// ---------------------------------------------------------------------------
+// Download queue panel
+// ---------------------------------------------------------------------------
 
-if (onlineReveal) {
-  onlineReveal.addEventListener("click", async () => {
-    if (online.output) await window.videoFinder.showFile(online.output);
-  });
-}
+const queueTasks = new Map(); // id -> { task, el }
 
-window.videoFinder.onDlpProgress((payload) => {
-  if (payload.phase === "downloading") {
-    if (typeof payload.percent === "number") {
-      onlineProgress.style.width = `${Math.min(100, payload.percent)}%`;
-    }
-    const bits = [];
-    bits.push(`下载 ${payload.percent?.toFixed?.(1) ?? "?"}%`);
-    if (payload.speed) bits.push(payload.speed);
-    if (payload.eta) bits.push(`ETA ${payload.eta}`);
-    onlineState.textContent = bits.join(" · ");
-  } else if (payload.phase === "merging") {
-    onlineState.textContent = "合并中…";
-  } else if (payload.phase === "post-processing") {
-    onlineState.textContent = "后处理中…";
+const QUEUE_STATE_TEXT = {
+  queued: "等待中",
+  canceled: "已取消",
+};
+
+function describeQueueTask(task) {
+  if (task.state === "running") {
+    if (task.phase === "merging") return "合并中…";
+    if (task.phase === "post-processing") return "后处理中…";
+    if (task.phase !== "downloading") return "启动中…";
+    const bits = [`下载 ${Number(task.percent || 0).toFixed(1)}%`];
+    if (task.total) bits.push(task.total);
+    if (task.speed) bits.push(task.speed);
+    if (task.eta) bits.push(`剩余 ${task.eta}`);
+    return bits.join(" · ");
   }
+  if (task.state === "done") {
+    return `完成${task.size ? ` · ${formatBytes(task.size)}` : ""} · ${task.filePath}`;
+  }
+  if (task.state === "error") return `失败：${task.error}`;
+  return QUEUE_STATE_TEXT[task.state] || task.state;
+}
+
+function queueButton(label, onClick) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "secondary";
+  btn.textContent = label;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function renderQueueTask(task) {
+  let entry = queueTasks.get(task.id);
+  if (!entry) {
+    const el = document.createElement("div");
+    el.innerHTML = `
+      <div class="queue-item-title"></div>
+      <div class="queue-item-actions"></div>
+      <div class="queue-item-state"></div>
+      <div class="progress"><div></div></div>
+    `;
+    entry = { task, el, actionsKey: "" };
+    queueTasks.set(task.id, entry);
+    queueList.append(el);
+  }
+  entry.task = task;
+  const { el } = entry;
+  el.className = `queue-item is-${task.state}`;
+  const title = el.querySelector(".queue-item-title");
+  title.textContent = task.title;
+  title.title = task.url;
+  el.querySelector(".queue-item-state").textContent = describeQueueTask(task);
+  el.querySelector(".progress div").style.width = `${Math.min(100, task.percent || 0)}%`;
+
+  // Only rebuild buttons when the state changes, so a click isn't lost to a
+  // progress update replacing the button under the cursor.
+  if (entry.actionsKey !== task.state) {
+    entry.actionsKey = task.state;
+    const actions = [];
+    const id = task.id;
+    if (task.state === "queued" || task.state === "running") {
+      actions.push(queueButton("取消", () => window.videoFinder.dlpQueueCancel(id)));
+    }
+    if (task.state === "error" || task.state === "canceled") {
+      actions.push(
+        queueButton("重试", async () => {
+          const res = await window.videoFinder.dlpQueueRetry(id);
+          if (res && !res.ok && res.error) onlineState.textContent = res.error;
+        })
+      );
+    }
+    if (task.state === "done") {
+      actions.push(queueButton("打开位置", () => window.videoFinder.showFile(task.filePath)));
+    }
+    if (task.state !== "running") {
+      actions.push(queueButton("移除", () => window.videoFinder.dlpQueueRemove(id)));
+    }
+    el.querySelector(".queue-item-actions").replaceChildren(...actions);
+  }
+  updateQueueSummary();
+}
+
+function removeQueueTask(id) {
+  const entry = queueTasks.get(id);
+  if (!entry) return;
+  entry.el.remove();
+  queueTasks.delete(id);
+  updateQueueSummary();
+}
+
+function updateQueueSummary() {
+  const counts = { queued: 0, running: 0, done: 0, error: 0 };
+  for (const { task } of queueTasks.values()) {
+    if (task.state in counts) counts[task.state]++;
+  }
+  const parts = [];
+  if (counts.running) parts.push(`下载中 ${counts.running}`);
+  if (counts.queued) parts.push(`等待 ${counts.queued}`);
+  if (counts.done) parts.push(`完成 ${counts.done}`);
+  if (counts.error) parts.push(`失败 ${counts.error}`);
+  queueSummary.textContent = parts.length ? `· ${parts.join(" · ")}` : "";
+  const empty = queueList.querySelector(".queue-empty");
+  if (empty) empty.hidden = queueTasks.size > 0;
+}
+
+window.videoFinder.onDlpQueue((payload) => {
+  if (payload.type === "update") renderQueueTask(payload.task);
+  else if (payload.type === "remove") removeQueueTask(payload.id);
 });
 
-window.videoFinder.onDlpStatus((payload) => {
-  if (payload.state === "running") onlineState.textContent = "运行中";
-  if (payload.state === "done") onlineState.textContent = "完成";
-  if (payload.state === "error") onlineState.textContent = payload.message || "失败";
-});
+queueCancelAll?.addEventListener("click", () => window.videoFinder.dlpQueueCancelAll());
+queueClearDone?.addEventListener("click", () => window.videoFinder.dlpQueueClearFinished());
+
+const QUEUE_PARALLEL_KEY = "videoFinder.queueParallel";
+function readStoredParallel() {
+  try {
+    return localStorage.getItem(QUEUE_PARALLEL_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+if (queueParallel) {
+  const stored = readStoredParallel();
+  if (stored && [...queueParallel.options].some((o) => o.value === stored)) {
+    queueParallel.value = stored;
+  }
+  window.videoFinder.dlpQueueSetParallel(Number(queueParallel.value));
+  queueParallel.addEventListener("change", () => {
+    try {
+      localStorage.setItem(QUEUE_PARALLEL_KEY, queueParallel.value);
+    } catch {
+      /* preference only */
+    }
+    window.videoFinder.dlpQueueSetParallel(Number(queueParallel.value));
+  });
+}
+
+// The queue lives in the main process; rebuild the view after a reload.
+window.videoFinder.dlpQueueList().then(({ tasks }) => tasks.forEach(renderQueueTask));
 
 if (infoDropZone) {
   const onDragOver = (event) => {
