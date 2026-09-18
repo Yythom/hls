@@ -641,6 +641,10 @@ button.secondary:hover {
   align-items: center;
 }
 
+.trim-row[hidden] {
+  display: none;
+}
+
 .trim-row label {
   color: var(--muted);
   font-size: 13px;

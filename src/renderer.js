@@ -709,11 +709,13 @@ function makeTool({
   getOutputExt,
   getRunPayload,
   validate,
+  formatDone = null,
   pickInputOptions = null,
 }) {
   const tool = {
     input: null,
     inputName: null,
+    inputSize: 0,
     output: null,
     duration: 0,
     running: false,
@@ -743,6 +745,7 @@ function makeTool({
       }
       tool.input = file.filePath;
       tool.inputName = file.fileName;
+      tool.inputSize = file.size || 0;
       tool.duration = file.duration || 0;
       inputNameEl.textContent = `${file.fileName} · ${formatBytes(file.size)}${
         file.duration ? ` · ${formatDurationDisplay(file.duration)}` : ""
@@ -787,7 +790,7 @@ function makeTool({
     try {
       const payload = getRunPayload(tool);
       const result = await window.videoFinder.toolsRun(payload);
-      stateEl.textContent = `完成 · ${formatBytes(result.size)}`;
+      stateEl.textContent = formatDone ? formatDone(tool, result) : `完成 · ${formatBytes(result.size)}`;
       progressEl.style.width = "100%";
       revealBtn.hidden = false;
     } catch (error) {
@@ -870,6 +873,106 @@ makeTool({
     output: t.output,
     options: { mode: convertMode.value, scale: convertScale.value },
   }),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Video compress
+// ─────────────────────────────────────────────────────────────────────────────
+
+const compressMode = document.querySelector("#compressMode");
+const compressQuality = document.querySelector("#compressQuality");
+const compressTargetMb = document.querySelector("#compressTargetMb");
+const compressCodec = document.querySelector("#compressCodec");
+const compressScale = document.querySelector("#compressScale");
+const compressCrf = document.querySelector("#compressCrf");
+const compressCrfValue = document.querySelector("#compressCrfValue");
+const compressFps = document.querySelector("#compressFps");
+const compressPreset = document.querySelector("#compressPreset");
+const compressAudio = document.querySelector("#compressAudio");
+// Keep in sync with COMPRESS_CRF / COMPRESS_CRF_RANGE in tools.js.
+const COMPRESS_CRF_UI = {
+  h264: { min: 18, max: 35, medium: 27 },
+  h265: { min: 20, max: 38, medium: 28 },
+};
+const compressState = document.querySelector("#compressState");
+const compressProgress = document.querySelector("#compressProgress");
+
+function syncCompressMode() {
+  const bySize = compressMode.value === "size";
+  document.querySelector("#compressQualityRow").hidden = bySize;
+  document.querySelector("#compressSizeRow").hidden = !bySize;
+  document.querySelector("#compressCrfRow").hidden = bySize || compressQuality.value !== "custom";
+}
+
+function syncCompressCrfRange() {
+  const range = COMPRESS_CRF_UI[compressCodec.value] || COMPRESS_CRF_UI.h264;
+  const current = Number(compressCrf.value);
+  compressCrf.min = String(range.min);
+  compressCrf.max = String(range.max);
+  compressCrf.value = String(Math.min(range.max, Math.max(range.min, current || range.medium)));
+  compressCrfValue.textContent = compressCrf.value;
+}
+
+compressMode.addEventListener("change", syncCompressMode);
+compressQuality.addEventListener("change", syncCompressMode);
+compressCodec.addEventListener("change", syncCompressCrfRange);
+compressCrf.addEventListener("input", () => {
+  compressCrfValue.textContent = compressCrf.value;
+});
+syncCompressMode();
+syncCompressCrfRange();
+
+makeTool({
+  op: "compress",
+  pickInputBtn: document.querySelector("#compressPickInput"),
+  inputNameEl: document.querySelector("#compressInputName"),
+  pickOutputBtn: document.querySelector("#compressPickOutput"),
+  outputNameEl: document.querySelector("#compressOutputName"),
+  runBtn: document.querySelector("#compressRun"),
+  cancelBtn: document.querySelector("#compressCancel"),
+  revealBtn: document.querySelector("#compressReveal"),
+  stateEl: compressState,
+  progressEl: compressProgress,
+  controlEls: [
+    compressMode,
+    compressQuality,
+    compressCrf,
+    compressTargetMb,
+    compressCodec,
+    compressScale,
+    compressFps,
+    compressPreset,
+    compressAudio,
+  ],
+  getOutputExt: () => "mp4",
+  validate: (t) => {
+    if (!t.input) return "请先选择源视频";
+    if (compressMode.value === "size" && !(Number(compressTargetMb.value) > 0)) return "请输入有效的目标大小";
+    return null;
+  },
+  getRunPayload: (t) => ({
+    op: "compress",
+    input: t.input,
+    output: t.output,
+    options: {
+      mode: compressMode.value,
+      quality: compressQuality.value,
+      crf: Number(compressCrf.value),
+      targetMb: Number(compressTargetMb.value),
+      codec: compressCodec.value,
+      scale: compressScale.value,
+      fps: compressFps.value,
+      preset: compressPreset.value,
+      audioKbps: Number(compressAudio.value),
+    },
+  }),
+  formatDone: (t, result) => {
+    const after = formatBytes(result.size);
+    if (!t.inputSize) return `完成 · ${after}`;
+    const ratio = Math.round((1 - result.size / t.inputSize) * 100);
+    const summary = `完成 · ${formatBytes(t.inputSize)} → ${after}`;
+    return ratio > 0 ? `${summary}（减小 ${ratio}%）` : `${summary}（未变小，可降低画质或分辨率）`;
+  },
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1169,6 +1272,7 @@ renderConcatList();
 const TOOL_STATE_ELS = {
   audio: { state: audioState, progress: audioProgress },
   convert: { state: convertState, progress: convertProgress },
+  compress: { state: compressState, progress: compressProgress },
   image: { state: imageState, progress: imageProgress },
   watermark: { state: watermarkState, progress: watermarkProgress },
   gif: { state: gifState, progress: gifProgress },

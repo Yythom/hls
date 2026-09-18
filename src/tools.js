@@ -320,10 +320,10 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
 
   let activeToolsChild = null;
 
-  function spawnToolsFfmpeg(args, { onProgressTime } = {}) {
+  function spawnToolsFfmpeg(args, { onProgressTime, cwd } = {}) {
     return new Promise((resolve, reject) => {
       logEvent("debug", "Running tools ffmpeg", { args: safeFfmpegArgs(args) });
-      const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"], cwd });
       activeToolsChild = child;
 
       let stderr = "";
@@ -433,8 +433,18 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
           args.push("-vf", `scale=${w}:-2:flags=lanczos`);
         }
       }
-      args.push("-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p");
-      args.push("-c:a", "aac", "-b:a", "192k");
+      if (output.toLowerCase().endsWith(".webm")) {
+        // WebM only carries VP8/VP9/AV1 video and Vorbis/Opus audio.
+        args.push(
+          "-c:v", "libvpx-vp9", "-crf", "31", "-b:v", "0",
+          "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+          "-pix_fmt", "yuv420p"
+        );
+        args.push("-c:a", "libopus", "-b:a", "128k");
+      } else {
+        args.push("-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p");
+        args.push("-c:a", "aac", "-b:a", "192k");
+      }
     }
 
     if (output.toLowerCase().endsWith(".mp4") || output.toLowerCase().endsWith(".mov")) {
@@ -452,6 +462,101 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
         });
       },
     });
+  }
+
+  // CRF per quality level; x265 needs a higher CRF than x264 for similar quality.
+  const COMPRESS_CRF = {
+    h264: { high: 23, medium: 27, low: 31 },
+    h265: { high: 25, medium: 28, low: 32 },
+  };
+  const COMPRESS_CRF_RANGE = { h264: [18, 35], h265: [20, 38] };
+  const COMPRESS_PRESETS = ["veryfast", "faster", "medium", "slow", "slower"];
+  const COMPRESS_AUDIO_KBPS = [0, 64, 96, 128, 192]; // 0 = drop the audio track
+  const COMPRESS_MIN_VIDEO_KBPS = 100;
+
+  function compressVideoArgs(codec, options) {
+    const width = Number(options?.scale);
+    const args = [];
+    if (Number.isFinite(width) && width > 0) {
+      // Never upscale: cap the width at the source width.
+      args.push("-vf", `scale='min(${width},iw)':-2:flags=lanczos`);
+    }
+    const fps = Number(options?.fps);
+    // -fpsmax only lowers the rate; a 24 fps source stays 24 with a 30 cap.
+    if (Number.isFinite(fps) && fps > 0) args.push("-fpsmax", String(fps));
+    const preset = COMPRESS_PRESETS.includes(options?.preset) ? options.preset : "medium";
+    args.push("-c:v", codec === "h265" ? "libx265" : "libx264", "-preset", preset, "-pix_fmt", "yuv420p");
+    if (codec === "h265") args.push("-tag:v", "hvc1"); // QuickTime/iOS only play hvc1-tagged HEVC
+    return args;
+  }
+
+  function compressCrf(codec, options) {
+    if (options?.quality === "custom") {
+      const [min, max] = COMPRESS_CRF_RANGE[codec];
+      return String(Math.round(clampNumber(options?.crf, min, max, COMPRESS_CRF[codec].medium)));
+    }
+    const level = ["high", "medium", "low"].includes(options?.quality) ? options.quality : "medium";
+    return String(COMPRESS_CRF[codec][level]);
+  }
+
+  async function runCompress(input, output, options, item, totalDuration) {
+    const codec = options?.codec === "h265" ? "h265" : "h264";
+    const byTarget = options?.mode === "size";
+
+    const baseArgs = ["-hide_banner", "-y", "-nostats", "-progress", "pipe:1", "-i", input];
+    const videoArgs = compressVideoArgs(codec, options);
+    const audioKbps = COMPRESS_AUDIO_KBPS.includes(Number(options?.audioKbps)) ? Number(options.audioKbps) : 128;
+    const audioArgs = audioKbps > 0 ? ["-c:a", "aac", "-b:a", `${audioKbps}k`] : ["-an"];
+    const tailArgs = ["-movflags", "+faststart", output];
+
+    const reportProgress = (offset, weight) => (seconds) => {
+      send("tools:progress", {
+        id: item.id,
+        phase: "encoding",
+        elapsed: totalDuration > 0 ? offset * totalDuration + seconds * weight : seconds,
+        total: totalDuration,
+      });
+    };
+
+    if (!byTarget) {
+      await spawnToolsFfmpeg(
+        [...baseArgs, ...videoArgs, "-crf", compressCrf(codec, options), ...audioArgs, ...tailArgs],
+        { onProgressTime: reportProgress(0, 1) }
+      );
+      return;
+    }
+
+    const targetMb = Number(options?.targetMb);
+    if (!Number.isFinite(targetMb) || targetMb <= 0) throw new Error("目标大小无效");
+    if (!(totalDuration > 0)) throw new Error("无法读取视频时长，不能按目标大小压缩");
+    // Reserve ~3% for container overhead.
+    const totalKbps = (targetMb * 8 * 1024 * 0.97) / totalDuration;
+    const videoKbps = Math.floor(totalKbps - audioKbps);
+    if (videoKbps < COMPRESS_MIN_VIDEO_KBPS) {
+      const minMb = Math.ceil((((COMPRESS_MIN_VIDEO_KBPS + audioKbps) * totalDuration) / 8 / 1024 / 0.97) * 10) / 10;
+      throw new Error(`目标大小过小，这段视频至少需要约 ${minMb} MB`);
+    }
+
+    // Two-pass ABR. Stats files live in a temp dir used as cwd, so the
+    // x265-params value stays a bare filename (a Windows "C:\" path would
+    // break its colon-separated syntax).
+    const passDir = await fs.promises.mkdtemp(path.join(require("os").tmpdir(), "vf-2pass-"));
+    const passArgs = (pass) =>
+      codec === "h265"
+        ? ["-x265-params", `pass=${pass}:stats=x265_2pass.log:log-level=error`]
+        : ["-pass", String(pass), "-passlogfile", "x264_2pass"];
+    try {
+      await spawnToolsFfmpeg(
+        [...baseArgs, ...videoArgs, "-b:v", `${videoKbps}k`, ...passArgs(1), "-an", "-f", "null", "-"],
+        { cwd: passDir, onProgressTime: reportProgress(0, 0.5) }
+      );
+      await spawnToolsFfmpeg(
+        [...baseArgs, ...videoArgs, "-b:v", `${videoKbps}k`, ...passArgs(2), ...audioArgs, ...tailArgs],
+        { cwd: passDir, onProgressTime: reportProgress(0.5, 0.5) }
+      );
+    } finally {
+      await fs.promises.rm(passDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   function clampNumber(value, min, max, fallback) {
@@ -771,6 +876,7 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
     generateThumbnail,
     runExtractAudio,
     runConvert,
+    runCompress,
     runImage,
     runWatermark,
     runGif,

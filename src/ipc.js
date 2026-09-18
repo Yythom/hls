@@ -131,6 +131,7 @@ function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, h
       if (op !== "concat" && op !== "gif" && op !== "image" && input) { try { totalDuration = await tools.probeDuration(input); } catch { /* probe is best-effort */ } }
       if (op === "audio") { if (!input) throw new Error("Input file is required."); await tools.runExtractAudio(input, output, options, item, totalDuration); }
       else if (op === "convert") { if (!input) throw new Error("Input file is required."); await tools.runConvert(input, output, options, item, totalDuration); }
+      else if (op === "compress") { if (!input) throw new Error("Input file is required."); await tools.runCompress(input, output, options, item, totalDuration); }
       else if (op === "image") { if (!input) throw new Error("Input file is required."); await tools.runImage(input, output, options, item); }
       else if (op === "watermark") { if (!input) throw new Error("Input file is required."); await tools.runWatermark(input, output, options, item, totalDuration); }
       else if (op === "gif") { if (!input) throw new Error("Input file is required."); await tools.runGif(input, output, options, item); }

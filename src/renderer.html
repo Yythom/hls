@@ -21,6 +21,9 @@
         <button class="tab" type="button" data-tab="convert" role="tab">
           格式转换
         </button>
+        <button class="tab" type="button" data-tab="compress" role="tab">
+          视频压缩
+        </button>
         <button class="tab" type="button" data-tab="image" role="tab">
           图片处理
         </button>
@@ -350,6 +353,153 @@
               <span id="convertState">Idle</span>
               <div class="progress">
                 <div id="convertProgress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-panel" data-panel="compress" hidden>
+        <section class="trim-band">
+          <div class="trim-card">
+            <div class="trim-row">
+              <label>源视频</label>
+              <div class="trim-row-body">
+                <button id="compressPickInput" type="button">选择文件…</button>
+                <span id="compressInputName" class="trim-muted">未选择文件</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>压缩方式</label>
+              <div class="trim-row-body">
+                <select id="compressMode">
+                  <option value="quality">按画质</option>
+                  <option value="size">按目标大小（两遍编码，较慢）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row" id="compressQualityRow">
+              <label>画质</label>
+              <div class="trim-row-body">
+                <select id="compressQuality">
+                  <option value="high">高（体积减小较少）</option>
+                  <option value="medium" selected>中（推荐）</option>
+                  <option value="low">低（体积最小）</option>
+                  <option value="custom">自定义 CRF</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row" id="compressCrfRow" hidden>
+              <label>CRF</label>
+              <div class="trim-row-body image-quality-row">
+                <input id="compressCrf" type="range" min="18" max="35" step="1" value="27" />
+                <span id="compressCrfValue" class="trim-muted">27</span>
+                <span class="trim-muted">数值越小画质越好、文件越大</span>
+              </div>
+            </div>
+
+            <div class="trim-row" id="compressSizeRow" hidden>
+              <label>目标大小</label>
+              <div class="trim-row-body">
+                <input id="compressTargetMb" type="number" min="1" step="1" value="50" style="width: 96px" />
+                <span class="trim-muted">MB，实际结果会有少量偏差</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>编码</label>
+              <div class="trim-row-body">
+                <select id="compressCodec">
+                  <option value="h264">H.264（兼容性最好）</option>
+                  <option value="h265">H.265（同画质体积更小，编码更慢）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>分辨率</label>
+              <div class="trim-row-body">
+                <select id="compressScale">
+                  <option value="source">保持原始</option>
+                  <option value="1920">不超过 1080p（宽 1920）</option>
+                  <option value="1280">不超过 720p（宽 1280）</option>
+                  <option value="854">不超过 480p（宽 854）</option>
+                  <option value="640">不超过 360p（宽 640）</option>
+                </select>
+                <span class="trim-muted">不会放大小于该宽度的视频</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>帧率</label>
+              <div class="trim-row-body">
+                <select id="compressFps">
+                  <option value="source">保持原始</option>
+                  <option value="60">不超过 60 fps</option>
+                  <option value="30">不超过 30 fps</option>
+                  <option value="24">不超过 24 fps</option>
+                </select>
+                <span class="trim-muted">只会降低，不会补帧</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>编码速度</label>
+              <div class="trim-row-body">
+                <select id="compressPreset">
+                  <option value="veryfast">很快</option>
+                  <option value="faster">较快</option>
+                  <option value="medium" selected>标准</option>
+                  <option value="slow">较慢</option>
+                  <option value="slower">很慢</option>
+                </select>
+                <span class="trim-muted">越慢压缩效率越高，同样大小下画质更好</span>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>音频</label>
+              <div class="trim-row-body">
+                <select id="compressAudio">
+                  <option value="192">AAC 192 kbps</option>
+                  <option value="128" selected>AAC 128 kbps</option>
+                  <option value="96">AAC 96 kbps</option>
+                  <option value="64">AAC 64 kbps（人声够用）</option>
+                  <option value="0">去掉音轨</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="trim-row">
+              <label>输出</label>
+              <div class="trim-row-body">
+                <button id="compressPickOutput" type="button">另存为…</button>
+                <span id="compressOutputName" class="trim-muted">未选择</span>
+              </div>
+            </div>
+
+            <div class="trim-actions">
+              <button id="compressRun" type="button">开始压缩</button>
+              <button
+                id="compressCancel"
+                type="button"
+                class="secondary"
+                disabled
+              >
+                取消
+              </button>
+              <button id="compressReveal" type="button" class="secondary" hidden>
+                打开文件位置
+              </button>
+            </div>
+
+            <div class="trim-status">
+              <span id="compressState">Idle</span>
+              <div class="progress">
+                <div id="compressProgress"></div>
               </div>
             </div>
           </div>
