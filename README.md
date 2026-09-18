@@ -28,4 +28,6 @@ For local development, fetch the binary once:
 npm run fetch:ytdlp     # downloads into resources/yt-dlp/<platform-arch>/
 ```
 
+The app ships yt-dlp's "onedir" build (an executable plus an `_internal/` folder) rather than the single-file build: the single-file build unpacks its Python runtime into a new temp folder on every launch, which costs ~10s per call on macOS. In-app updates install the onedir build into the app's user-data folder.
+
 To override the bundled binary (e.g. to use a newer yt-dlp), set `YT_DLP_PATH=/path/to/yt-dlp` before starting the app. To pin a specific release at fetch time, set `YT_DLP_TAG=2025.10.22` (defaults to `latest`).

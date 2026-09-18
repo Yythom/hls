@@ -136,6 +136,9 @@ app.whenReady().then(() => {
   cleanUpInterruptedTasks().catch((error) =>
     logEvent("warn", "Startup cleanup failed", { error: error.message })
   );
+  ytdlp.retireLegacyYtDlp().catch((error) =>
+    logEvent("warn", "Could not retire legacy yt-dlp", { error: error.message })
+  );
 });
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

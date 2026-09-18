@@ -45,6 +45,9 @@
     ],
     "mac": {
       "category": "public.app-category.utilities",
+      "signIgnore": [
+        "Contents/Resources/yt-dlp/"
+      ],
       "target": [
         {
           "target": "dmg",
@@ -60,7 +63,7 @@
           "to": "ffmpeg"
         },
         {
-          "from": "resources/yt-dlp/darwin-${arch}/yt-dlp",
+          "from": "resources/yt-dlp/darwin-${arch}",
           "to": "yt-dlp"
         }
       ]
@@ -80,8 +83,8 @@
           "to": "ffmpeg.exe"
         },
         {
-          "from": "resources/yt-dlp/win32-x64/yt-dlp.exe",
-          "to": "yt-dlp.exe"
+          "from": "resources/yt-dlp/win32-x64",
+          "to": "yt-dlp"
         }
       ]
     },

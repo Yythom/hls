@@ -1379,6 +1379,8 @@ if (window.videoFinder.onDlpUpdateProgress) {
       const mb = (payload.received / 1024 / 1024).toFixed(1);
       const totalMb = payload.total ? (payload.total / 1024 / 1024).toFixed(1) : "?";
       ytdlpUpdateState.textContent = `下载中 ${pct}%  (${mb}/${totalMb} MB)`;
+    } else if (payload.phase === "install") {
+      ytdlpUpdateState.textContent = "解压并验证新版本…（首次运行系统会做安全检查，约 10 秒）";
     } else if (payload.phase === "done") {
       ytdlpUpdateState.textContent = "更新完成";
     } else if (payload.phase === "error") {

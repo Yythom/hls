@@ -17,12 +17,29 @@ const SUPPORTED_COOKIE_BROWSERS = new Set([
 ]);
 
 function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent }) {
+  // yt-dlp ships as a PyInstaller "onedir" build: an executable next to an
+  // `_internal/` folder. (The one-file build re-extracts ~72MB of Python into a
+  // new temp dir on every launch: ~10s each time on macOS, and a leaked temp
+  // dir whenever the process is killed.)
+  const ONEDIR = {
+    darwin: { asset: "yt-dlp_macos.zip", exe: "yt-dlp_macos" },
+    win32: { asset: "yt-dlp_win.zip", exe: "yt-dlp.exe" },
+    linux: { asset: "yt-dlp_linux.zip", exe: "yt-dlp_linux" },
+  }[process.platform];
+
   let cachedYtDlpPath;
-  function ytDlpExeName() {
-    return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  // In-app updates install here, taking precedence over the bundled copy.
+  function ytDlpUserDir() {
+    return path.join(app.getPath("userData"), "yt-dlp");
   }
-  function ytDlpUserPath() {
-    return path.join(app.getPath("userData"), "bin", ytDlpExeName());
+  // Where in-app updates used to put the one-file build.
+  function legacyYtDlpPath() {
+    return path.join(app.getPath("userData"), "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+  }
+  function bundledYtDlpDir() {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, "yt-dlp")
+      : path.join(__dirname, "..", "resources", "yt-dlp", `${process.platform}-${process.arch}`);
   }
   function ytDlpPath() {
     if (cachedYtDlpPath) return cachedYtDlpPath;
@@ -30,29 +47,48 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       cachedYtDlpPath = process.env.YT_DLP_PATH;
       return cachedYtDlpPath;
     }
-    const exe = ytDlpExeName();
-    // Prefer user-updated copy in userData over bundled binary.
-    const userPath = ytDlpUserPath();
-    if (fs.existsSync(userPath) && fs.statSync(userPath).size > 1_000_000) {
-      cachedYtDlpPath = userPath;
-      return cachedYtDlpPath;
-    }
-    if (app.isPackaged) {
-      const resourcePath = path.join(process.resourcesPath, exe);
-      if (fs.existsSync(resourcePath)) {
-        cachedYtDlpPath = resourcePath;
-        return cachedYtDlpPath;
-      }
-    } else {
-      const archDir = `${process.platform}-${process.arch}`;
-      const devPath = path.join(__dirname, "..", "resources", "yt-dlp", archDir, exe);
-      if (fs.existsSync(devPath)) {
-        cachedYtDlpPath = devPath;
-        return cachedYtDlpPath;
-      }
-    }
-    cachedYtDlpPath = exe;
+    const candidates = [
+      ONEDIR && path.join(ytDlpUserDir(), ONEDIR.exe),
+      legacyYtDlpPath(),
+      ONEDIR && path.join(bundledYtDlpDir(), ONEDIR.exe),
+    ].filter(Boolean);
+    cachedYtDlpPath = candidates.find((p) => fs.existsSync(p)) || "yt-dlp";
     return cachedYtDlpPath;
+  }
+
+  function readBundledVersion() {
+    try {
+      return fs.readFileSync(path.join(bundledYtDlpDir(), "version.txt"), "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  // An earlier in-app update may have left the slow one-file build in
+  // userData/bin, which would shadow the bundled onedir copy. Drop it once the
+  // onedir build is at least as new; keep it (until the next update) if it is
+  // still the newer one. Runs in the background at startup.
+  async function retireLegacyYtDlp() {
+    const legacy = legacyYtDlpPath();
+    if (process.env.YT_DLP_PATH || !fs.existsSync(legacy)) return;
+    let replacement = fs.existsSync(path.join(ytDlpUserDir(), ONEDIR?.exe || "")) ? "installed" : "";
+    if (!replacement) {
+      const bundled = readBundledVersion();
+      const legacyVersion = bundled ? await versionOf(legacy) : "";
+      if (bundled && legacyVersion && compareYtDlpVersions(bundled, legacyVersion) >= 0) replacement = bundled;
+    }
+    if (!replacement) return;
+    await fs.promises.rm(path.dirname(legacy), { recursive: true, force: true });
+    if (cachedYtDlpPath === legacy) cachedYtDlpPath = undefined;
+    logEvent("info", "Removed legacy one-file yt-dlp", { legacy, replacement });
+  }
+
+  function versionOf(exePath) {
+    return new Promise((resolve) => {
+      execFile(exePath, ["--version"], { timeout: 120000 }, (error, stdout) => {
+        resolve(error ? "" : String(stdout).trim().split("\n").pop().trim());
+      });
+    });
   }
 
   // The bundled yt-dlp is a PyInstaller one-file build: the process we spawn
@@ -541,10 +577,22 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     return value;
   }
 
-  function ytDlpAssetName() {
-    if (process.platform === "win32") return "yt-dlp.exe";
-    if (process.platform === "darwin") return "yt-dlp_macos";
-    return "yt-dlp";
+  function extractZip(zipPath, destDir) {
+    return new Promise((resolve, reject) => {
+      const done = (error) => (error ? reject(new Error(`解压失败：${error.message}`)) : resolve());
+      if (process.platform === "win32") {
+        const q = (p) => `'${p.replace(/'/g, "''")}'`;
+        execFile(
+          "powershell",
+          ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -LiteralPath ${q(zipPath)} -DestinationPath ${q(destDir)} -Force`],
+          done
+        );
+      } else if (process.platform === "darwin") {
+        execFile("ditto", ["-x", "-k", zipPath, destDir], done);
+      } else {
+        execFile("unzip", ["-q", "-o", zipPath, "-d", destDir], done);
+      }
+    });
   }
 
   let activeYtDlpUpdate = null;
@@ -566,15 +614,15 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     if (activeYtDlpUpdate) {
       return { ok: false, error: "已有进行中的更新任务" };
     }
+    if (!ONEDIR) return { ok: false, error: "当前平台不支持应用内更新" };
     const controller = new AbortController();
     activeYtDlpUpdate = controller;
+    const userData = app.getPath("userData");
+    const zipPath = path.join(userData, "yt-dlp-update.zip.partial");
+    const staging = path.join(userData, "yt-dlp.staging");
     try {
-      const asset = ytDlpAssetName();
-      const url = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`;
-      const destPath = ytDlpUserPath();
-      await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-      const tmpPath = `${destPath}.partial`;
-
+      const { tag } = await getLatestYtDlpRelease();
+      const url = `${RELEASES_URL}/download/${tag}/${ONEDIR.asset}`;
       send("dlp:updateProgress", { phase: "start", percent: 0 });
       logEvent("info", "yt-dlp update: downloading", { url });
 
@@ -584,7 +632,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       let received = 0;
       let lastEmitted = 0;
 
-      const out = fs.createWriteStream(tmpPath);
+      const out = fs.createWriteStream(zipPath);
       const reader = res.body.getReader();
       while (true) {
         const { done, value } = await reader.read();
@@ -603,24 +651,46 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
         }
       }
       await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+      if (total && received !== total) throw new Error(`下载不完整 (${received}/${total})`);
 
-      if (fs.statSync(tmpPath).size < 1_000_000) {
-        throw new Error("下载文件异常(过小)");
+      // Unpack and prove the new build runs before touching the current one.
+      // (macOS scans a freshly unpacked build once, so this first run is slow.)
+      send("dlp:updateProgress", { phase: "install" });
+      await fs.promises.rm(staging, { recursive: true, force: true });
+      await fs.promises.mkdir(staging, { recursive: true });
+      await extractZip(zipPath, staging);
+      const stagedExe = path.join(staging, ONEDIR.exe);
+      if (!fs.existsSync(stagedExe)) throw new Error(`压缩包里没有 ${ONEDIR.exe}`);
+      if (process.platform !== "win32") await fs.promises.chmod(stagedExe, 0o755);
+      const current = await versionOf(stagedExe);
+      if (!current) throw new Error("新版本无法运行，已保留当前版本");
+
+      const destDir = ytDlpUserDir();
+      const retired = `${destDir}.old-${Date.now()}`;
+      if (fs.existsSync(destDir)) {
+        try {
+          await fs.promises.rename(destDir, retired);
+        } catch (error) {
+          // Windows won't rename a folder whose exe is running.
+          throw new Error(`当前版本正在使用中，请等 yt-dlp 任务结束后再更新（${error.code || error.message}）`);
+        }
       }
-      await fs.promises.rename(tmpPath, destPath);
-      if (process.platform !== "win32") {
-        await fs.promises.chmod(destPath, 0o755);
-      }
+      await fs.promises.rename(staging, destDir);
+      await fs.promises.rm(retired, { recursive: true, force: true }).catch(() => {});
+      // The onedir install supersedes any one-file build from older versions.
+      await fs.promises.rm(path.dirname(legacyYtDlpPath()), { recursive: true, force: true }).catch(() => {});
       cachedYtDlpPath = undefined;
-      const current = await getCurrentYtDlpVersion();
+
       send("dlp:updateProgress", { phase: "done", percent: 100, current });
-      logEvent("info", "yt-dlp update: done", { path: destPath, version: current });
-      return { ok: true, current, path: destPath };
+      logEvent("info", "yt-dlp update: done", { path: destDir, version: current });
+      return { ok: true, current, path: destDir };
     } catch (error) {
       send("dlp:updateProgress", { phase: "error", error: error.message });
       logEvent("error", "yt-dlp update failed", { error: error.message });
       return { ok: false, error: error.message };
     } finally {
+      await fs.promises.rm(zipPath, { force: true }).catch(() => {});
+      await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
       activeYtDlpUpdate = null;
     }
   }
@@ -631,6 +701,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     pickOutput,
     pickDir,
     runDownload,
+    retireLegacyYtDlp,
     checkUpdate,
     update,
     supportedCookieBrowsers: () => Array.from(SUPPORTED_COOKIE_BROWSERS),

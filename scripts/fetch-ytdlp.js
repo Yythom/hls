@@ -1,22 +1,24 @@
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const { execFileSync } = require("child_process");
 const { pipeline } = require("stream/promises");
 
 // Pin to a specific yt-dlp release for reproducible builds.
 // Override with YT_DLP_TAG env var, or set to "latest" to fetch the latest release.
 const RELEASE_TAG = process.env.YT_DLP_TAG || "latest";
 
-const TAG_PATH = RELEASE_TAG === "latest" ? "latest/download" : `download/${RELEASE_TAG}`;
-const BASE_URL = `https://github.com/yt-dlp/yt-dlp/releases/${TAG_PATH}`;
-
-// yt-dlp_macos is a universal binary (arm64 + x64). We copy it into both
-// arch-specific resource folders so electron-builder's per-arch extraResources
-// keep working without changes.
+// We ship yt-dlp's "onedir" builds: the executable plus an `_internal/` dir.
+// The single-file builds unpack a ~72MB Python runtime into a fresh temp dir
+// on *every* launch (~10s on macOS, and the dir leaks when the process is
+// killed); the onedir build starts in ~0.3s.
+//
+// yt-dlp_macos.zip is universal (arm64 + x64), so both mac resource folders
+// get the same contents and electron-builder's per-arch extraResources work.
 const TARGETS = [
-  { platform: "darwin", arch: "arm64", asset: "yt-dlp_macos", out: "darwin-arm64/yt-dlp" },
-  { platform: "darwin", arch: "x64", asset: "yt-dlp_macos", out: "darwin-x64/yt-dlp" },
-  { platform: "win32", arch: "x64", asset: "yt-dlp.exe", out: "win32-x64/yt-dlp.exe" },
+  { platform: "darwin", arch: "arm64", asset: "yt-dlp_macos.zip", exe: "yt-dlp_macos" },
+  { platform: "darwin", arch: "x64", asset: "yt-dlp_macos.zip", exe: "yt-dlp_macos" },
+  { platform: "win32", arch: "x64", asset: "yt-dlp_win.zip", exe: "yt-dlp.exe" },
 ];
 
 const RESOURCES_ROOT = path.join(__dirname, "..", "resources", "yt-dlp");
@@ -24,7 +26,7 @@ const RESOURCES_ROOT = path.join(__dirname, "..", "resources", "yt-dlp");
 function get(url, redirects = 5) {
   return new Promise((resolve, reject) => {
     https
-      .get(url, (res) => {
+      .get(url, { headers: { "User-Agent": "video-download-build" } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           if (redirects <= 0) {
             reject(new Error(`Too many redirects fetching ${url}`));
@@ -44,36 +46,104 @@ function get(url, redirects = 5) {
   });
 }
 
-async function fetchTarget(target) {
-  const destPath = path.join(RESOURCES_ROOT, target.out);
-  if (fs.existsSync(destPath) && fs.statSync(destPath).size > 1_000_000) {
-    console.log(`✓ ${target.platform}-${target.arch} already present (${destPath})`);
+// "latest" -> the concrete tag, read from the /releases/latest redirect, so we
+// can record exactly which version got bundled.
+function resolveTag(tag) {
+  if (tag !== "latest") return Promise.resolve(tag);
+  return new Promise((resolve, reject) => {
+    https
+      .get(
+        "https://github.com/yt-dlp/yt-dlp/releases/latest",
+        { headers: { "User-Agent": "video-download-build" } },
+        (res) => {
+          res.resume();
+          const found = String(res.headers.location || "").match(/\/releases\/tag\/([^/?#]+)/);
+          if (found) resolve(decodeURIComponent(found[1]));
+          else reject(new Error(`Could not resolve latest yt-dlp tag (HTTP ${res.statusCode})`));
+        }
+      )
+      .on("error", reject);
+  });
+}
+
+function extractZip(zipPath, destDir) {
+  if (process.platform === "win32") {
+    execFileSync("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destDir.replace(/'/g, "''")}' -Force`,
+    ]);
+  } else {
+    execFileSync("unzip", ["-q", "-o", zipPath, "-d", destDir]);
+  }
+}
+
+function readVersion(dir) {
+  try {
+    return fs.readFileSync(path.join(dir, "version.txt"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+// Archives already downloaded this run, by asset name (both mac targets share one).
+const downloaded = new Map();
+
+async function downloadAsset(tag, asset) {
+  if (downloaded.has(asset)) return downloaded.get(asset);
+  const url = `https://github.com/yt-dlp/yt-dlp/releases/download/${tag}/${asset}`;
+  console.log(`↓ ${url}`);
+  await fs.promises.mkdir(RESOURCES_ROOT, { recursive: true });
+  const zipPath = path.join(RESOURCES_ROOT, `.${asset}.partial`);
+  await pipeline(await get(url), fs.createWriteStream(zipPath));
+  downloaded.set(asset, zipPath);
+  return zipPath;
+}
+
+async function fetchTarget(tag, target) {
+  const destDir = path.join(RESOURCES_ROOT, `${target.platform}-${target.arch}`);
+  const exePath = path.join(destDir, target.exe);
+  if (fs.existsSync(exePath) && readVersion(destDir) === tag) {
+    console.log(`✓ ${target.platform}-${target.arch} already at ${tag}`);
     return;
   }
 
-  const url = `${BASE_URL}/${target.asset}`;
-  console.log(`↓ ${target.platform}-${target.arch}  ${url}`);
-  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-
-  const tmpPath = `${destPath}.partial`;
-  const res = await get(url);
-  await pipeline(res, fs.createWriteStream(tmpPath));
-  await fs.promises.rename(tmpPath, destPath);
-  if (target.platform !== "win32") {
-    await fs.promises.chmod(destPath, 0o755);
+  const zipPath = await downloadAsset(tag, target.asset);
+  // Extract beside the old copy, then swap, so a failed run never leaves a
+  // half-populated folder (this also clears out the old single-file binary).
+  const staging = `${destDir}.staging`;
+  await fs.promises.rm(staging, { recursive: true, force: true });
+  await fs.promises.mkdir(staging, { recursive: true });
+  extractZip(zipPath, staging);
+  if (!fs.existsSync(path.join(staging, target.exe))) {
+    throw new Error(`${target.asset} did not contain ${target.exe}`);
   }
-  const size = fs.statSync(destPath).size;
-  console.log(`  done (${(size / 1024 / 1024).toFixed(1)}MB)`);
+  if (target.platform !== "win32") await fs.promises.chmod(path.join(staging, target.exe), 0o755);
+  await fs.promises.writeFile(path.join(staging, "version.txt"), `${tag}\n`);
+  await fs.promises.rm(destDir, { recursive: true, force: true });
+  await fs.promises.rename(staging, destDir);
+  console.log(`  ${target.platform}-${target.arch} ready (${tag})`);
 }
 
 (async () => {
-  console.log(`yt-dlp release: ${RELEASE_TAG}`);
-  for (const target of TARGETS) {
-    try {
-      await fetchTarget(target);
-    } catch (error) {
-      console.error(`✗ ${target.platform}-${target.arch}: ${error.message}`);
-      process.exitCode = 1;
+  // A Windows runner only builds Windows; macOS hosts may build both (`dist`).
+  const targets = process.platform === "win32" ? TARGETS.filter((t) => t.platform === "win32") : TARGETS;
+  try {
+    const tag = await resolveTag(RELEASE_TAG);
+    console.log(`yt-dlp release: ${tag}`);
+    for (const target of targets) {
+      try {
+        await fetchTarget(tag, target);
+      } catch (error) {
+        console.error(`✗ ${target.platform}-${target.arch}: ${error.message}`);
+        process.exitCode = 1;
+      }
     }
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    process.exitCode = 1;
+  } finally {
+    for (const zipPath of downloaded.values()) await fs.promises.rm(zipPath, { force: true });
   }
 })();
