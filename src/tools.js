@@ -257,10 +257,18 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
   // Thumbnail preview
   // ─────────────────────────────────────────────────────────────────────────────
 
+  // url -> JPEG data URL (tens of KB each). Least-recently-used entries go
+  // once the cap is hit, so a long session of scans doesn't pile them up.
   const thumbnailCache = new Map();
+  const MAX_THUMBNAILS = 60;
 
   async function generateThumbnail(item) {
-    if (thumbnailCache.has(item.url)) return thumbnailCache.get(item.url);
+    const cached = thumbnailCache.get(item.url);
+    if (cached) {
+      thumbnailCache.delete(item.url); // mark as most recently used
+      thumbnailCache.set(item.url, cached);
+      return cached;
+    }
 
     const headerText = await ffmpegHeaders(item);
     const dataUrl = await new Promise((resolve, reject) => {
@@ -307,6 +315,9 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
     });
 
     thumbnailCache.set(item.url, dataUrl);
+    if (thumbnailCache.size > MAX_THUMBNAILS) {
+      thumbnailCache.delete(thumbnailCache.keys().next().value);
+    }
     return dataUrl;
   }
 

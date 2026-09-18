@@ -124,48 +124,56 @@ function formatDetails(details) {
     .join("\n");
 }
 
+const LOG_ROWS_SHOWN = 80;
+
 function addLog(entry) {
   state.logs.push(entry);
   if (state.logs.length > 200) state.logs.shift();
-  renderLogs();
+  if (!logList) return;
+  // Append just the new row (scans log in bursts; rebuilding all rows each
+  // time made the page stutter), and only follow the tail if the user hasn't
+  // scrolled up to read something.
+  const atBottom = logList.scrollHeight - logList.scrollTop - logList.clientHeight < 24;
+  logList.append(buildLogRow(entry));
+  while (logList.childElementCount > LOG_ROWS_SHOWN) logList.firstElementChild.remove();
+  if (atBottom) logList.scrollTop = logList.scrollHeight;
 }
 
 function renderLogs() {
   if (!logList) return;
-
-  const rows = state.logs.slice(-80).map((entry) => {
-    const row = document.createElement("div");
-    row.className = `log-entry ${entry.level || "info"}`;
-
-    const line = document.createElement("div");
-    line.className = "log-line";
-
-    const level = document.createElement("span");
-    level.className = "log-level";
-    level.textContent = entry.level || "info";
-
-    const message = document.createElement("strong");
-    message.textContent = entry.message || "";
-
-    const time = document.createElement("span");
-    time.className = "log-time";
-    time.textContent = formatTime(entry.timestamp);
-
-    line.append(level, message, time);
-    row.append(line);
-
-    const details = formatDetails(entry.details);
-    if (details) {
-      const pre = document.createElement("pre");
-      pre.textContent = details;
-      row.append(pre);
-    }
-
-    return row;
-  });
-
-  logList.replaceChildren(...rows);
+  logList.replaceChildren(...state.logs.slice(-LOG_ROWS_SHOWN).map(buildLogRow));
   logList.scrollTop = logList.scrollHeight;
+}
+
+function buildLogRow(entry) {
+  const row = document.createElement("div");
+  row.className = `log-entry ${entry.level || "info"}`;
+
+  const line = document.createElement("div");
+  line.className = "log-line";
+
+  const level = document.createElement("span");
+  level.className = "log-level";
+  level.textContent = entry.level || "info";
+
+  const message = document.createElement("strong");
+  message.textContent = entry.message || "";
+
+  const time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = formatTime(entry.timestamp);
+
+  line.append(level, message, time);
+  row.append(line);
+
+  const details = formatDetails(entry.details);
+  if (details) {
+    const pre = document.createElement("pre");
+    pre.textContent = details;
+    row.append(pre);
+  }
+
+  return row;
 }
 
 function renderItem(item) {

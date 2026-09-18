@@ -8,7 +8,26 @@ function createScanner({ send, logEvent }) {
   let scanMeta = null;
   let activeScanSession = null;
   const discovered = new Map();
+  // Headers of the page's recent requests, so a resource that later turns out
+  // to be a video can be downloaded with what the browser actually sent.
+  // Bounded: a playing page (live streams, segment-by-segment HLS, ads,
+  // analytics) makes requests endlessly for as long as it stays open.
   const requestHeadersByUrl = new Map();
+  const MAX_TRACKED_REQUESTS = 500;
+
+  function rememberRequestHeaders(url, headers) {
+    requestHeadersByUrl.delete(url); // re-insert as newest
+    requestHeadersByUrl.set(url, headers);
+    if (requestHeadersByUrl.size <= MAX_TRACKED_REQUESTS) return;
+    // Evict the oldest entry that isn't a discovered video: those are needed
+    // at download time, and there are only ever a handful of them.
+    for (const key of requestHeadersByUrl.keys()) {
+      if (!discovered.has(key)) {
+        requestHeadersByUrl.delete(key);
+        return;
+      }
+    }
+  }
 
   const VIDEO_EXTENSIONS = [
     "mp4",
@@ -447,7 +466,7 @@ function createScanner({ send, logEvent }) {
 
     scanSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
       if (details.webContentsId === webContentsId) {
-        requestHeadersByUrl.set(details.url, pickDownloadHeaders(details.requestHeaders));
+        rememberRequestHeaders(details.url, pickDownloadHeaders(details.requestHeaders));
       }
       callback({ requestHeaders: details.requestHeaders });
     });
