@@ -18,39 +18,24 @@ const IMAGE_EXTS = [
   "gif",
 ];
 
-function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, hlsDownloader, tools, mediaInfo, ytdlp, dlpQueue, send, logEvent }) {
+function registerIpc({ ipcMain, getMainWindow, scanner, login, tools, mediaInfo, ytdlp, taskQueue, logEvent }) {
   ipcMain.handle("scan:start", async (_event, payload) => {
     const url = payload && typeof payload === "object" ? payload.url : payload;
     return scanner.startScan(url);
   });
   ipcMain.handle("scan:stop", async () => scanner.stopScan());
 
-  ipcMain.handle("download:start", async (_event, item) => {
-    const defaultPath = path.join(app.getPath("downloads"), outputFileNameForCandidate(item));
+  ipcMain.handle("download:pickOutput", async (_event, item) => {
     const result = await dialog.showSaveDialog(getMainWindow(), {
       title: isStreamItem(item) ? "Save HLS video" : "Save video",
-      defaultPath,
+      defaultPath: path.join(app.getPath("downloads"), outputFileNameForCandidate(item)),
       buttonLabel: "Save",
       filters: isStreamItem(item)
         ? [{ name: "MP4 Video", extensions: ["mp4"] }]
         : [{ name: "Video", extensions: ["mp4", "webm", "m4v", "mov", "mkv", "avi", "flv"] }],
     });
-    if (result.canceled || !result.filePath) {
-      logEvent("info", "Download canceled", { url: item.url });
-      return { canceled: true };
-    }
-    send("download:status", { id: item.id, state: "downloading", filePath: result.filePath });
-    logEvent("info", "Download selected", { url: item.url, filePath: result.filePath, kind: item.kind, contentType: item.contentType, size: item.size });
-    try {
-      const download = isStreamItem(item) ? await hlsDownloader.downloadStreamCandidate(item, result.filePath) : await httpDownloader.downloadCandidate(item, result.filePath);
-      send("download:status", { id: item.id, state: "done", filePath: result.filePath });
-      logEvent("info", "Download finished", { filePath: result.filePath });
-      return download;
-    } catch (error) {
-      send("download:status", { id: item.id, state: "error", message: error.message });
-      logEvent("error", "Download failed", { url: item.url, filePath: result.filePath, error: error.message });
-      throw error;
-    }
+    if (result.canceled || !result.filePath) return { canceled: true };
+    return { filePath: result.filePath };
   });
 
   ipcMain.handle("file:show", async (_event, filePath) => { if (filePath) shell.showItemInFolder(filePath); return { ok: true }; });
@@ -75,31 +60,6 @@ function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, h
     if (result.canceled || !result.filePath) return { canceled: true };
     return { filePath: result.filePath };
   });
-  ipcMain.handle("trim:run", async (_event, options) => {
-    const { input, output, ranges, mode, duration } = options || {};
-    if (!input || !output) throw new Error("Input and output paths are required.");
-    if (!Array.isArray(ranges) || ranges.length === 0) throw new Error("At least one delete range is required.");
-    const totalDuration = Number(duration) > 0 ? Number(duration) : await tools.probeDuration(input);
-    const deleteRanges = tools.normalizeDeleteRanges(ranges, totalDuration);
-    if (deleteRanges.length === 0) throw new Error("No valid delete ranges after parsing.");
-    const keepRanges = tools.computeKeepRanges(deleteRanges, totalDuration);
-    if (keepRanges.length === 0) throw new Error("Delete ranges cover the entire video; nothing left to keep.");
-    const totalKept = keepRanges.reduce((acc, [a, b]) => acc + (b - a), 0);
-    const item = { id: "trim-" + Date.now() };
-    logEvent("info", "Trim starting", { input, output, mode, totalDuration, totalKept, deleteRanges: deleteRanges.map(([a, b]) => tools.formatTimecode(a) + "-" + tools.formatTimecode(b)), keepRanges: keepRanges.map(([a, b]) => tools.formatTimecode(a) + "-" + tools.formatTimecode(b)) });
-    send("trim:status", { id: item.id, state: "running", mode, totalKept });
-    try {
-      if (mode === "fast") await tools.runTrimFast(input, output, keepRanges, item);
-      else await tools.runTrimAccurate(input, output, deleteRanges, totalKept, item);
-      const stat = await fs.promises.stat(output);
-      if (stat.size < 1024) throw new Error("Output looks too small (" + stat.size + " bytes).");
-      send("trim:status", { id: item.id, state: "done", filePath: output });
-      logEvent("info", "Trim completed", { output, size: stat.size });
-      return { ok: true, filePath: output, size: stat.size, totalKept };
-    } catch (error) { await fs.promises.rm(output, { force: true }); send("trim:status", { id: item.id, state: "error", message: error.message }); logEvent("error", "Trim failed", { error: error.message }); throw error; }
-  });
-  ipcMain.handle("trim:cancel", async () => tools.cancelTrim());
-
   ipcMain.handle("tools:pickFile", async (_event, options) => {
     const multi = !!options?.multi;
     const kind = options?.kind === "image" ? "image" : "video";
@@ -120,30 +80,6 @@ function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, h
     if (result.canceled || !result.filePath) return { canceled: true };
     return { filePath: result.filePath };
   });
-  ipcMain.handle("tools:run", async (_event, payload) => {
-    const { op, input, inputs, output, options } = payload || {};
-    if (!output) throw new Error("Output path is required.");
-    const item = { id: "tools-" + op + "-" + Date.now() };
-    send("tools:status", { id: item.id, state: "running", op });
-    logEvent("info", "Tool starting", { op, output, options });
-    try {
-      let totalDuration = 0;
-      if (op !== "concat" && op !== "gif" && op !== "image" && input) { try { totalDuration = await tools.probeDuration(input); } catch { /* probe is best-effort */ } }
-      if (op === "audio") { if (!input) throw new Error("Input file is required."); await tools.runExtractAudio(input, output, options, item, totalDuration); }
-      else if (op === "convert") { if (!input) throw new Error("Input file is required."); await tools.runConvert(input, output, options, item, totalDuration); }
-      else if (op === "compress") { if (!input) throw new Error("Input file is required."); await tools.runCompress(input, output, options, item, totalDuration); }
-      else if (op === "image") { if (!input) throw new Error("Input file is required."); await tools.runImage(input, output, options, item); }
-      else if (op === "watermark") { if (!input) throw new Error("Input file is required."); await tools.runWatermark(input, output, options, item, totalDuration); }
-      else if (op === "gif") { if (!input) throw new Error("Input file is required."); await tools.runGif(input, output, options, item); }
-      else if (op === "concat") { if (!Array.isArray(inputs) || inputs.length < 2) throw new Error("At least two input files are required."); await tools.runConcat(inputs, output, options, item); }
-      else throw new Error("Unsupported operation: " + op);
-      const stat = await fs.promises.stat(output);
-      send("tools:status", { id: item.id, state: "done", op, filePath: output });
-      logEvent("info", "Tool completed", { op, output, size: stat.size });
-      return { ok: true, filePath: output, size: stat.size };
-    } catch (error) { await fs.promises.rm(output, { force: true }).catch(() => {}); send("tools:status", { id: item.id, state: "error", op, message: error.message }); logEvent("error", "Tool failed", { op, error: error.message }); throw error; }
-  });
-  ipcMain.handle("tools:cancel", async () => tools.cancelTools());
   ipcMain.handle("info:pickFile", async () => {
     const result = await dialog.showOpenDialog(getMainWindow(), { title: "选择媒体文件", properties: ["openFile"], filters: [{ name: "Media", extensions: mediaInfo.INFO_EXTS }, { name: "All", extensions: ["*"] }] });
     if (result.canceled || result.filePaths.length === 0) return { canceled: true };
@@ -159,14 +95,14 @@ function registerIpc({ ipcMain, getMainWindow, scanner, login, httpDownloader, h
   ipcMain.handle("dlp:pickOutput", async (_event, options) => ytdlp.pickOutput(options));
   ipcMain.handle("dlp:listPlaylist", async (_event, payload) => ytdlp.listPlaylist(payload));
   ipcMain.handle("dlp:pickDir", async () => ytdlp.pickDir());
-  ipcMain.handle("dlp:queueAdd", async (_event, jobs) => dlpQueue.enqueue(jobs));
-  ipcMain.handle("dlp:queueCancel", async (_event, id) => dlpQueue.cancel(id));
-  ipcMain.handle("dlp:queueCancelAll", async () => dlpQueue.cancelAll());
-  ipcMain.handle("dlp:queueRetry", async (_event, id) => dlpQueue.retry(id));
-  ipcMain.handle("dlp:queueRemove", async (_event, id) => dlpQueue.remove(id));
-  ipcMain.handle("dlp:queueClearFinished", async () => dlpQueue.clearFinished());
-  ipcMain.handle("dlp:queueSetParallel", async (_event, n) => dlpQueue.setParallel(n));
-  ipcMain.handle("dlp:queueList", async () => dlpQueue.list());
+  ipcMain.handle("task:add", async (_event, entries) => taskQueue.add(entries));
+  ipcMain.handle("task:cancel", async (_event, id) => taskQueue.cancel(id));
+  ipcMain.handle("task:cancelAll", async () => taskQueue.cancelAll());
+  ipcMain.handle("task:retry", async (_event, id) => taskQueue.retry(id));
+  ipcMain.handle("task:remove", async (_event, id) => taskQueue.remove(id));
+  ipcMain.handle("task:clearFinished", async () => taskQueue.clearFinished());
+  ipcMain.handle("task:setLimit", async (_event, lane, n) => taskQueue.setLimit(lane, n));
+  ipcMain.handle("task:list", async () => taskQueue.list());
   ipcMain.handle("dlp:checkUpdate", async () => ytdlp.checkUpdate());
   ipcMain.handle("dlp:update", async () => ytdlp.update());
 

@@ -39,7 +39,6 @@ const tabPanels = document.querySelectorAll(".tab-panel");
 
 const state = {
   items: new Map(),
-  downloads: new Map(),
   scanning: false,
   logs: [],
 };
@@ -48,7 +47,6 @@ const trimStateData = {
   input: null,
   output: null,
   duration: 0,
-  running: false,
 };
 
 function isStream(item) {
@@ -261,19 +259,15 @@ function renderItem(item) {
   return row;
 }
 
+let scanDownloadStatus = null;
+
 async function startDownload(item) {
+  scanDownloadStatus ||= createTaskStatus({ stateEl: downloadState, progressEl: progressBar });
   try {
-    downloadState.textContent = "Preparing";
-    progressBar.style.width = "0%";
-    const result = await window.videoFinder.startDownload(item);
-    if (result.canceled) {
-      downloadState.textContent = "Canceled";
-      return;
-    }
-    state.downloads.set(item.id, result.filePath);
-    downloadState.textContent = "Done";
-    progressBar.style.width = "100%";
-    await window.videoFinder.showFile(result.filePath);
+    const result = await window.videoFinder.downloadPickOutput(item);
+    if (!result || result.canceled) return;
+    const [id] = await submitTasks([{ kind: "download", job: { item, output: result.filePath } }]);
+    scanDownloadStatus.track(id);
   } catch (error) {
     downloadState.textContent = "Failed";
     scanStatus.textContent = error.message;
@@ -422,65 +416,6 @@ window.videoFinder.onScanStatus((status) => {
   }
 });
 
-window.videoFinder.onDownloadProgress((payload) => {
-  if (payload.mode === "hls-segments") {
-    if (payload.total > 0) {
-      const percent = Math.min((payload.received / payload.total) * 100, 100);
-      progressBar.style.width = `${percent}%`;
-      downloadState.textContent = `Segments ${payload.received} / ${payload.total} (${percent.toFixed(0)}%)`;
-    } else {
-      downloadState.textContent = "Downloading segments";
-    }
-    return;
-  }
-
-  if (payload.mode === "hls-merging") {
-    downloadState.textContent = "Merging segments";
-    progressBar.style.width = "92%";
-    return;
-  }
-
-  if (payload.mode === "stream") {
-    downloadState.textContent = payload.received > 0 ? "Merging stream" : "Starting";
-    progressBar.style.width = "55%";
-    return;
-  }
-
-  if (payload.mode === "remux") {
-    downloadState.textContent = "Repairing MP4";
-    progressBar.style.width = "85%";
-    return;
-  }
-
-  if (payload.mode === "reencode") {
-    downloadState.textContent = "Re-encoding (stream changes mid-way)";
-    progressBar.style.width = "88%";
-    return;
-  }
-
-  if (payload.mode === "verify") {
-    downloadState.textContent = "Verifying video";
-    progressBar.style.width = "96%";
-    return;
-  }
-
-  if (payload.total > 0) {
-    const percent = Math.min((payload.received / payload.total) * 100, 100);
-    progressBar.style.width = `${percent}%`;
-    downloadState.textContent = `${percent.toFixed(0)}%`;
-  } else {
-    downloadState.textContent = formatBytes(payload.received);
-  }
-});
-
-window.videoFinder.onDownloadStatus((payload) => {
-  if (payload.state === "downloading") downloadState.textContent = "Downloading";
-  if (payload.state === "repairing") downloadState.textContent = "Repairing MP4";
-  if (payload.state === "verifying") downloadState.textContent = "Verifying video";
-  if (payload.state === "error") downloadState.textContent = "Failed";
-  if (payload.state === "done") downloadState.textContent = "Done";
-});
-
 window.videoFinder.onAppLog((entry) => {
   addLog(entry);
   if (entry.level === "error") {
@@ -557,15 +492,12 @@ function getRanges() {
     .filter(({ start, end }) => start !== "" || end !== "");
 }
 
-function setTrimRunning(running) {
-  trimStateData.running = running;
-  trimRun.disabled = running;
-  trimCancel.disabled = !running;
-  trimPickInput.disabled = running;
-  trimPickOutput.disabled = running;
-  trimAddRange.disabled = running;
-  trimMode.disabled = running;
-}
+const trimStatus = createTaskStatus({
+  stateEl: trimState,
+  progressEl: trimProgress,
+  cancelBtn: trimCancel,
+  revealBtn: trimReveal,
+});
 
 function suggestOutputName(inputName) {
   if (!inputName) return null;
@@ -585,18 +517,21 @@ trimPickInput.addEventListener("click", async () => {
   trimStateData.duration = result.duration;
   trimInputName.textContent = `${result.fileName} · ${formatBytes(result.size)}`;
   trimDuration.textContent = `${formatDurationDisplay(result.duration)} (${result.duration.toFixed(2)}s)`;
+  trimStatus.reset();
   trimState.textContent = "Ready";
   trimProgress.style.width = "0%";
-  trimReveal.hidden = true;
 });
 
-trimPickOutput.addEventListener("click", async () => {
+async function pickTrimOutput() {
   const suggested = suggestOutputName(trimInputName.textContent.split(" · ")[0]);
   const result = await window.videoFinder.trimPickOutput(suggested);
-  if (!result || result.canceled) return;
+  if (!result || result.canceled) return false;
   trimStateData.output = result.filePath;
   trimOutputName.textContent = result.filePath;
-});
+  return true;
+}
+
+trimPickOutput.addEventListener("click", pickTrimOutput);
 
 trimAddRange.addEventListener("click", () => addRangeRow());
 
@@ -605,80 +540,37 @@ trimRun.addEventListener("click", async () => {
     trimState.textContent = "Pick a source video first";
     return;
   }
-  if (!trimStateData.output) {
-    trimState.textContent = "Choose an output location first";
-    return;
-  }
   const ranges = getRanges();
   if (ranges.length === 0) {
     trimState.textContent = "Add at least one delete range";
     return;
   }
-
-  setTrimRunning(true);
-  trimState.textContent = "Starting";
-  trimProgress.style.width = "0%";
-  trimReveal.hidden = true;
+  if (!trimStateData.output && !(await pickTrimOutput())) {
+    trimState.textContent = "Choose an output location first";
+    return;
+  }
 
   try {
-    const result = await window.videoFinder.trimRun({
-      input: trimStateData.input,
-      output: trimStateData.output,
-      ranges,
-      mode: trimMode.value,
-      duration: trimStateData.duration,
+    const [id] = await submitTasks([
+      {
+        kind: "trim",
+        job: {
+          input: trimStateData.input,
+          output: trimStateData.output,
+          ranges,
+          mode: trimMode.value,
+          duration: trimStateData.duration,
+        },
+      },
+    ]);
+    trimStatus.track(id, {
+      formatDone: (task) => `Done · ${formatBytes(task.size)} · ${task.summary}`,
     });
-    trimState.textContent = `Done · ${formatBytes(result.size)} · kept ${result.totalKept.toFixed(2)}s`;
-    trimProgress.style.width = "100%";
-    trimReveal.hidden = false;
+    // The next run must pick its own file rather than overwrite this one.
+    trimStateData.output = null;
+    trimOutputName.textContent = "Not chosen";
   } catch (error) {
     trimState.textContent = `Failed: ${error.message}`;
-  } finally {
-    setTrimRunning(false);
-  }
-});
-
-trimCancel.addEventListener("click", async () => {
-  await window.videoFinder.trimCancel();
-  trimState.textContent = "Canceling…";
-});
-
-trimReveal.addEventListener("click", async () => {
-  if (trimStateData.output) await window.videoFinder.showFile(trimStateData.output);
-});
-
-window.videoFinder.onTrimProgress((payload) => {
-  if (payload.phase === "encoding") {
-    if (payload.total > 0) {
-      const percent = Math.min((payload.elapsed / payload.total) * 100, 100);
-      trimProgress.style.width = `${percent}%`;
-      trimState.textContent = `Encoding ${formatDurationDisplay(payload.elapsed)} / ${formatDurationDisplay(
-        payload.total
-      )} (${percent.toFixed(0)}%)`;
-    } else {
-      trimState.textContent = `Encoding ${formatDurationDisplay(payload.elapsed)}`;
-    }
-    return;
-  }
-  if (payload.phase === "extracting") {
-    const percent = ((payload.segmentIndex + 1) / payload.totalSegments) * 100;
-    trimProgress.style.width = `${percent}%`;
-    trimState.textContent = `Extracting segment ${payload.segmentIndex + 1} / ${payload.totalSegments}`;
-    return;
-  }
-  if (payload.phase === "concatenating") {
-    trimProgress.style.width = "95%";
-    trimState.textContent = "Merging segments";
-  }
-});
-
-window.videoFinder.onTrimStatus((payload) => {
-  if (payload.state === "running") {
-    trimState.textContent = `Running (${payload.mode})`;
-  } else if (payload.state === "done") {
-    trimState.textContent = "Done";
-  } else if (payload.state === "error") {
-    trimState.textContent = payload.message || "Failed";
   }
 });
 
@@ -705,7 +597,6 @@ function makeTool({
   revealBtn,
   stateEl,
   progressEl,
-  controlEls = [],
   getOutputExt,
   getRunPayload,
   validate,
@@ -718,19 +609,8 @@ function makeTool({
     inputSize: 0,
     output: null,
     duration: 0,
-    running: false,
   };
-
-  function setRunning(running) {
-    tool.running = running;
-    runBtn.disabled = running;
-    cancelBtn.disabled = !running;
-    if (pickInputBtn) pickInputBtn.disabled = running;
-    if (pickOutputBtn) pickOutputBtn.disabled = running;
-    controlEls.forEach((el) => {
-      if (el) el.disabled = running;
-    });
-  }
+  const status = createTaskStatus({ stateEl, progressEl, cancelBtn, revealBtn });
 
   if (pickInputBtn) {
     pickInputBtn.addEventListener("click", async () => {
@@ -750,13 +630,13 @@ function makeTool({
       inputNameEl.textContent = `${file.fileName} · ${formatBytes(file.size)}${
         file.duration ? ` · ${formatDurationDisplay(file.duration)}` : ""
       }`;
+      status.reset();
       stateEl.textContent = "Ready";
       progressEl.style.width = "0%";
-      revealBtn.hidden = true;
     });
   }
 
-  pickOutputBtn.addEventListener("click", async () => {
+  async function pickOutput() {
     const ext = typeof getOutputExt === "function" ? getOutputExt(tool) : "mp4";
     const stem = stemOf(tool.inputName) || `output-${Date.now()}`;
     const result = await window.videoFinder.toolsPickOutput({
@@ -764,10 +644,13 @@ function makeTool({
       ext,
       suggestedName: `${stem}_${op}.${ext}`,
     });
-    if (!result || result.canceled) return;
+    if (!result || result.canceled) return false;
     tool.output = result.filePath;
     outputNameEl.textContent = result.filePath;
-  });
+    return true;
+  }
+
+  pickOutputBtn.addEventListener("click", pickOutput);
 
   runBtn.addEventListener("click", async () => {
     if (validate) {
@@ -777,36 +660,24 @@ function makeTool({
         return;
       }
     }
-    if (!tool.output) {
+    if (!tool.output && !(await pickOutput())) {
       stateEl.textContent = "请先选择保存位置";
       return;
     }
 
-    setRunning(true);
-    stateEl.textContent = "启动中";
-    progressEl.style.width = "0%";
-    revealBtn.hidden = true;
-
     try {
-      const payload = getRunPayload(tool);
-      const result = await window.videoFinder.toolsRun(payload);
-      stateEl.textContent = formatDone ? formatDone(tool, result) : `完成 · ${formatBytes(result.size)}`;
-      progressEl.style.width = "100%";
-      revealBtn.hidden = false;
+      const [id] = await submitTasks([{ kind: "tool", job: getRunPayload(tool) }]);
+      // formatDone may compare against the input as it was when submitted.
+      const snapshot = { ...tool };
+      status.track(id, {
+        formatDone: formatDone ? (task) => formatDone(snapshot, task) : null,
+      });
+      // The next run must pick its own file rather than overwrite this one.
+      tool.output = null;
+      outputNameEl.textContent = "未选择";
     } catch (error) {
       stateEl.textContent = `失败：${error.message}`;
-    } finally {
-      setRunning(false);
     }
-  });
-
-  cancelBtn.addEventListener("click", async () => {
-    await window.videoFinder.toolsCancel();
-    stateEl.textContent = "正在取消…";
-  });
-
-  revealBtn.addEventListener("click", async () => {
-    if (tool.output) await window.videoFinder.showFile(tool.output);
   });
 
   return tool;
@@ -832,7 +703,6 @@ makeTool({
   revealBtn: document.querySelector("#audioReveal"),
   stateEl: audioState,
   progressEl: audioProgress,
-  controlEls: [audioFormat],
   getOutputExt: () => AUDIO_EXT[audioFormat.value] || "mp3",
   validate: (t) => (t.input ? null : "请先选择源视频"),
   getRunPayload: (t) => ({
@@ -864,7 +734,6 @@ makeTool({
   revealBtn: document.querySelector("#convertReveal"),
   stateEl: convertState,
   progressEl: convertProgress,
-  controlEls: [convertFormat, convertMode, convertScale],
   getOutputExt: () => convertFormat.value || "mp4",
   validate: (t) => (t.input ? null : "请先选择源视频"),
   getRunPayload: (t) => ({
@@ -933,17 +802,6 @@ makeTool({
   revealBtn: document.querySelector("#compressReveal"),
   stateEl: compressState,
   progressEl: compressProgress,
-  controlEls: [
-    compressMode,
-    compressQuality,
-    compressCrf,
-    compressTargetMb,
-    compressCodec,
-    compressScale,
-    compressFps,
-    compressPreset,
-    compressAudio,
-  ],
   getOutputExt: () => "mp4",
   validate: (t) => {
     if (!t.input) return "请先选择源视频";
@@ -1011,7 +869,6 @@ makeTool({
   revealBtn: document.querySelector("#imageReveal"),
   stateEl: imageState,
   progressEl: imageProgress,
-  controlEls: [imageFormat, imageQuality, imageResizeMode, imageWidth, imageStripMeta],
   pickInputOptions: {
     title: "选择源图片",
     kind: "image",
@@ -1064,15 +921,6 @@ makeTool({
   revealBtn: document.querySelector("#watermarkReveal"),
   stateEl: watermarkState,
   progressEl: watermarkProgress,
-  controlEls: [
-    watermarkMode,
-    watermarkX,
-    watermarkY,
-    watermarkW,
-    watermarkH,
-    watermarkColor,
-    watermarkCropSide,
-  ],
   getOutputExt: () => "mp4",
   validate: (t) => {
     if (!t.input) return "请先选择源视频";
@@ -1116,7 +964,6 @@ makeTool({
   revealBtn: document.querySelector("#gifReveal"),
   stateEl: gifState,
   progressEl: gifProgress,
-  controlEls: [gifStart, gifDuration, gifFps, gifWidth],
   getOutputExt: () => "gif",
   validate: (t) => (t.input ? null : "请先选择源视频"),
   getRunPayload: (t) => ({
@@ -1151,7 +998,6 @@ const concatClear = document.querySelector("#concatClear");
 const concatData = {
   files: [],
   output: null,
-  running: false,
 };
 
 function renderConcatList() {
@@ -1201,126 +1047,58 @@ concatClear.addEventListener("click", () => {
   renderConcatList();
 });
 
-concatPickOutput.addEventListener("click", async () => {
+async function pickConcatOutput() {
   const result = await window.videoFinder.toolsPickOutput({
     title: "保存拼接结果",
     ext: "mp4",
     suggestedName: `concat-${Date.now()}.mp4`,
   });
-  if (!result || result.canceled) return;
+  if (!result || result.canceled) return false;
   concatData.output = result.filePath;
   concatOutputName.textContent = result.filePath;
-});
-
-function setConcatRunning(running) {
-  concatData.running = running;
-  concatRun.disabled = running;
-  concatCancel.disabled = !running;
-  concatAdd.disabled = running;
-  concatClear.disabled = running;
-  concatPickOutput.disabled = running;
-  concatMode.disabled = running;
+  return true;
 }
+
+concatPickOutput.addEventListener("click", pickConcatOutput);
+
+const concatStatus = createTaskStatus({
+  stateEl: concatState,
+  progressEl: concatProgress,
+  cancelBtn: concatCancel,
+  revealBtn: concatReveal,
+});
 
 concatRun.addEventListener("click", async () => {
   if (concatData.files.length < 2) {
     concatState.textContent = "至少需要两个视频";
     return;
   }
-  if (!concatData.output) {
+  if (!concatData.output && !(await pickConcatOutput())) {
     concatState.textContent = "请先选择保存位置";
     return;
   }
 
-  setConcatRunning(true);
-  concatState.textContent = "启动中";
-  concatProgress.style.width = "0%";
-  concatReveal.hidden = true;
-
   try {
-    const result = await window.videoFinder.toolsRun({
-      op: "concat",
-      inputs: concatData.files.map((f) => f.filePath),
-      output: concatData.output,
-      options: { mode: concatMode.value },
-    });
-    concatState.textContent = `完成 · ${formatBytes(result.size)}`;
-    concatProgress.style.width = "100%";
-    concatReveal.hidden = false;
+    const [id] = await submitTasks([
+      {
+        kind: "tool",
+        job: {
+          op: "concat",
+          inputs: concatData.files.map((f) => f.filePath),
+          output: concatData.output,
+          options: { mode: concatMode.value },
+        },
+      },
+    ]);
+    concatStatus.track(id);
+    concatData.output = null;
+    concatOutputName.textContent = "未选择";
   } catch (error) {
     concatState.textContent = `失败：${error.message}`;
-  } finally {
-    setConcatRunning(false);
   }
-});
-
-concatCancel.addEventListener("click", async () => {
-  await window.videoFinder.toolsCancel();
-  concatState.textContent = "正在取消…";
-});
-
-concatReveal.addEventListener("click", async () => {
-  if (concatData.output) await window.videoFinder.showFile(concatData.output);
 });
 
 renderConcatList();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Tool progress dispatch
-// ─────────────────────────────────────────────────────────────────────────────
-
-const TOOL_STATE_ELS = {
-  audio: { state: audioState, progress: audioProgress },
-  convert: { state: convertState, progress: convertProgress },
-  compress: { state: compressState, progress: compressProgress },
-  image: { state: imageState, progress: imageProgress },
-  watermark: { state: watermarkState, progress: watermarkProgress },
-  gif: { state: gifState, progress: gifProgress },
-  concat: { state: concatState, progress: concatProgress },
-};
-
-function toolKindFromId(id) {
-  if (!id) return null;
-  const m = String(id).match(/^tools-([^-]+)-/);
-  return m ? m[1] : null;
-}
-
-window.videoFinder.onToolsProgress((payload) => {
-  const kind = toolKindFromId(payload.id);
-  const els = TOOL_STATE_ELS[kind];
-  if (!els) return;
-
-  if (payload.phase === "concatenating") {
-    els.state.textContent = "合并中";
-    els.progress.style.width = "92%";
-    return;
-  }
-  if (payload.phase === "image") {
-    els.state.textContent = payload.message || "处理中";
-    els.progress.style.width = `${payload.percent || 35}%`;
-    return;
-  }
-  if (payload.phase === "encoding") {
-    if (payload.total > 0) {
-      const percent = Math.min((payload.elapsed / payload.total) * 100, 100);
-      els.progress.style.width = `${percent}%`;
-      els.state.textContent = `处理中 ${formatDurationDisplay(payload.elapsed)} / ${formatDurationDisplay(
-        payload.total
-      )} (${percent.toFixed(0)}%)`;
-    } else {
-      els.state.textContent = `处理中 ${formatDurationDisplay(payload.elapsed)}`;
-    }
-  }
-});
-
-window.videoFinder.onToolsStatus((payload) => {
-  const kind = toolKindFromId(payload.id);
-  const els = TOOL_STATE_ELS[kind];
-  if (!els) return;
-  if (payload.state === "running") els.state.textContent = "运行中";
-  if (payload.state === "done") els.state.textContent = "完成";
-  if (payload.state === "error") els.state.textContent = payload.message || "失败";
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Media info viewer
@@ -1533,11 +1311,6 @@ const onlinePlaylistNone = document.querySelector("#onlinePlaylistNone");
 const onlinePlaylistQuality = document.querySelector("#onlinePlaylistQuality");
 const onlinePickDir = document.querySelector("#onlinePickDir");
 const onlineDirName = document.querySelector("#onlineDirName");
-const queueList = document.querySelector("#queueList");
-const queueSummary = document.querySelector("#queueSummary");
-const queueParallel = document.querySelector("#queueParallel");
-const queueCancelAll = document.querySelector("#queueCancelAll");
-const queueClearDone = document.querySelector("#queueClearDone");
 const onlineCookies = document.querySelector("#onlineCookies");
 const onlineLogin = document.querySelector("#onlineLogin");
 const onlineLoginClear = document.querySelector("#onlineLoginClear");
@@ -1838,33 +1611,30 @@ function renderFormats() {
     first.checked = true;
     online.selectedFormatId = first.value;
   }
-
-  onlineFormats.addEventListener(
-    "change",
-    (event) => {
-      // Changing the embedded audio-format dropdown should also select its row.
-      if (event.target?.id === "onlineAudioFormat") {
-        const radio = onlineFormats.querySelector("input[value='audio-extract']");
-        if (radio) radio.checked = true;
-        online.selectedFormatId = "audio-extract";
-      } else if (event.target?.name === "online-format") {
-        online.selectedFormatId = event.target.value;
-      } else {
-        return;
-      }
-      // The chosen extension may have changed; a stale output path is now wrong.
-      if (online.output) {
-        online.output = null;
-        onlineOutputName.textContent = "未选择";
-      }
-    },
-    { once: false }
-  );
 }
 
 if (onlineKindFilter) {
   onlineKindFilter.addEventListener("change", renderFormats);
 }
+
+// Registered once: renderFormats runs on every parse / filter change.
+onlineFormats?.addEventListener("change", (event) => {
+  // Changing the embedded audio-format dropdown should also select its row.
+  if (event.target?.id === "onlineAudioFormat") {
+    const radio = onlineFormats.querySelector("input[value='audio-extract']");
+    if (radio) radio.checked = true;
+    online.selectedFormatId = "audio-extract";
+  } else if (event.target?.name === "online-format") {
+    online.selectedFormatId = event.target.value;
+  } else {
+    return;
+  }
+  // The chosen extension may have changed; a stale output path is now wrong.
+  if (online.output) {
+    online.output = null;
+    onlineOutputName.textContent = "未选择";
+  }
+});
 
 // Toggle the output controls between "save one file" and "save into a folder".
 function setOnlineMode(mode) {
@@ -2053,8 +1823,8 @@ async function enqueuePlaylist(cookies) {
     concurrency,
     ...cookies,
   }));
-  const res = await window.videoFinder.dlpQueueAdd(jobs);
-  onlineState.textContent = `已加入队列 ${res.ids.length} 项`;
+  const ids = await submitTasks(jobs.map((job) => ({ kind: "ytdlp", job })));
+  onlineState.textContent = `已加入队列 ${ids.length} 项，右上角「任务」查看进度`;
 }
 
 async function enqueueSingle(url, cookies) {
@@ -2074,18 +1844,21 @@ async function enqueueSingle(url, cookies) {
   ) {
     format = online.selectedFormatId;
   }
-  await window.videoFinder.dlpQueueAdd([
+  await submitTasks([
     {
-      title: online.meta.title || url,
-      url,
-      format,
-      audioFormat: chosenAudioFormat(),
-      output: online.output,
-      concurrency: Number(onlineConcurrency?.value) || 8,
-      ...cookies,
+      kind: "ytdlp",
+      job: {
+        title: online.meta.title || url,
+        url,
+        format,
+        audioFormat: chosenAudioFormat(),
+        output: online.output,
+        concurrency: Number(onlineConcurrency?.value) || 8,
+        ...cookies,
+      },
     },
   ]);
-  onlineState.textContent = "已加入队列";
+  onlineState.textContent = "已加入队列，右上角「任务」查看进度";
   // The next download must not silently overwrite this one's file.
   online.output = null;
   onlineOutputName.textContent = "未选择";
@@ -2105,7 +1878,7 @@ if (onlineRun) {
       if (online.playlist) await enqueuePlaylist(cookies);
       else await enqueueSingle(url, cookies);
     } catch (error) {
-      onlineState.textContent = `加入队列失败：${error.message}`;
+      onlineState.textContent = `加入队列失败：${ipcErrorMessage(error)}`;
     } finally {
       onlineRun.disabled = false;
     }
@@ -2113,35 +1886,53 @@ if (onlineRun) {
 }
 
 // ---------------------------------------------------------------------------
-// Download queue panel
+// Global task center: every download / yt-dlp / compress / convert / trim job
+// runs through one queue in the main process. Pages submit tasks and mirror
+// the progress of the one they submitted last; the drawer shows them all.
 // ---------------------------------------------------------------------------
 
-const queueTasks = new Map(); // id -> { task, el }
+const taskToggle = document.querySelector("#taskToggle");
+const taskBadge = document.querySelector("#taskBadge");
+const taskDrawer = document.querySelector("#taskDrawer");
+const taskBackdrop = document.querySelector("#taskBackdrop");
+const taskClose = document.querySelector("#taskClose");
+const taskSummary = document.querySelector("#taskSummary");
+const taskListEl = document.querySelector("#taskList");
+const taskLimitNetwork = document.querySelector("#taskLimitNetwork");
+const taskLimitCpu = document.querySelector("#taskLimitCpu");
+const taskCancelAll = document.querySelector("#taskCancelAll");
+const taskClearDone = document.querySelector("#taskClearDone");
 
-const QUEUE_STATE_TEXT = {
-  queued: "等待中",
-  canceled: "已取消",
-};
+const taskEntries = new Map(); // id -> { task, el, actionsKey }
+const taskWatchers = new Map(); // id -> Set<(task) => void>
 
-function describeQueueTask(task) {
-  if (task.state === "running") {
-    if (task.phase === "merging") return "合并中…";
-    if (task.phase === "post-processing") return "后处理中…";
-    if (task.phase !== "downloading") return "启动中…";
-    const bits = [`下载 ${Number(task.percent || 0).toFixed(1)}%`];
-    if (task.total) bits.push(task.total);
-    if (task.speed) bits.push(task.speed);
-    if (task.eta) bits.push(`剩余 ${task.eta}`);
-    return bits.join(" · ");
-  }
-  if (task.state === "done") {
-    return `完成${task.size ? ` · ${formatBytes(task.size)}` : ""} · ${task.filePath}`;
-  }
-  if (task.state === "error") return `失败：${task.error}`;
-  return QUEUE_STATE_TEXT[task.state] || task.state;
+const TASK_KIND_LABELS = { ytdlp: "在线", download: "下载", tool: "处理", trim: "裁剪" };
+
+// ipcRenderer.invoke wraps main-process errors in a noisy prefix.
+function ipcErrorMessage(error) {
+  return String(error?.message || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 }
 
-function queueButton(label, onClick) {
+function describeTask(task) {
+  switch (task.state) {
+    case "queued":
+      return "排队中…";
+    case "running":
+      return task.text || "进行中…";
+    case "done":
+      return ["完成", task.size ? formatBytes(task.size) : "", task.summary, task.filePath]
+        .filter(Boolean)
+        .join(" · ");
+    case "error":
+      return `失败：${task.error}`;
+    case "canceled":
+      return "已取消";
+    default:
+      return task.state;
+  }
+}
+
+function taskButton(label, onClick) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "secondary";
@@ -2150,114 +1941,205 @@ function queueButton(label, onClick) {
   return btn;
 }
 
-function renderQueueTask(task) {
-  let entry = queueTasks.get(task.id);
+async function retryTask(id) {
+  const res = await window.videoFinder.taskRetry(id);
+  if (res && !res.ok && res.error) alert(res.error);
+}
+
+function renderTask(task) {
+  let entry = taskEntries.get(task.id);
   if (!entry) {
     const el = document.createElement("div");
     el.innerHTML = `
-      <div class="queue-item-title"></div>
+      <div class="queue-item-title"><span class="queue-item-kind"></span><span></span></div>
       <div class="queue-item-actions"></div>
       <div class="queue-item-state"></div>
       <div class="progress"><div></div></div>
     `;
     entry = { task, el, actionsKey: "" };
-    queueTasks.set(task.id, entry);
-    queueList.append(el);
+    taskEntries.set(task.id, entry);
+    // Newest first.
+    taskListEl.prepend(el);
   }
   entry.task = task;
   const { el } = entry;
   el.className = `queue-item is-${task.state}`;
-  const title = el.querySelector(".queue-item-title");
+  el.querySelector(".queue-item-kind").textContent = TASK_KIND_LABELS[task.kind] || task.kind;
+  const title = el.querySelector(".queue-item-title span:last-child");
   title.textContent = task.title;
-  title.title = task.url;
-  el.querySelector(".queue-item-state").textContent = describeQueueTask(task);
-  el.querySelector(".progress div").style.width = `${Math.min(100, task.percent || 0)}%`;
+  el.querySelector(".queue-item-title").title = task.title;
+  el.querySelector(".queue-item-state").textContent = describeTask(task);
+  if (typeof task.percent === "number" || task.state !== "running") {
+    el.querySelector(".progress div").style.width = `${Math.min(100, task.percent || 0)}%`;
+  }
 
   // Only rebuild buttons when the state changes, so a click isn't lost to a
   // progress update replacing the button under the cursor.
   if (entry.actionsKey !== task.state) {
     entry.actionsKey = task.state;
-    const actions = [];
     const id = task.id;
+    const actions = [];
     if (task.state === "queued" || task.state === "running") {
-      actions.push(queueButton("取消", () => window.videoFinder.dlpQueueCancel(id)));
+      actions.push(taskButton("取消", () => window.videoFinder.taskCancel(id)));
     }
     if (task.state === "error" || task.state === "canceled") {
-      actions.push(
-        queueButton("重试", async () => {
-          const res = await window.videoFinder.dlpQueueRetry(id);
-          if (res && !res.ok && res.error) onlineState.textContent = res.error;
-        })
-      );
+      actions.push(taskButton("重试", () => retryTask(id)));
     }
     if (task.state === "done") {
-      actions.push(queueButton("打开位置", () => window.videoFinder.showFile(task.filePath)));
+      actions.push(taskButton("打开位置", () => window.videoFinder.showFile(task.filePath)));
     }
-    if (task.state !== "running") {
-      actions.push(queueButton("移除", () => window.videoFinder.dlpQueueRemove(id)));
+    if (task.state !== "running" && task.state !== "queued") {
+      actions.push(taskButton("移除", () => window.videoFinder.taskRemove(id)));
     }
     el.querySelector(".queue-item-actions").replaceChildren(...actions);
   }
-  updateQueueSummary();
+  updateTaskSummary();
 }
 
-function removeQueueTask(id) {
-  const entry = queueTasks.get(id);
+function removeTaskEntry(id) {
+  const entry = taskEntries.get(id);
   if (!entry) return;
   entry.el.remove();
-  queueTasks.delete(id);
-  updateQueueSummary();
+  taskEntries.delete(id);
+  taskWatchers.delete(id);
+  updateTaskSummary();
 }
 
-function updateQueueSummary() {
+function updateTaskSummary() {
   const counts = { queued: 0, running: 0, done: 0, error: 0 };
-  for (const { task } of queueTasks.values()) {
+  for (const { task } of taskEntries.values()) {
     if (task.state in counts) counts[task.state]++;
   }
   const parts = [];
-  if (counts.running) parts.push(`下载中 ${counts.running}`);
-  if (counts.queued) parts.push(`等待 ${counts.queued}`);
+  if (counts.running) parts.push(`进行中 ${counts.running}`);
+  if (counts.queued) parts.push(`排队 ${counts.queued}`);
   if (counts.done) parts.push(`完成 ${counts.done}`);
   if (counts.error) parts.push(`失败 ${counts.error}`);
-  queueSummary.textContent = parts.length ? `· ${parts.join(" · ")}` : "";
-  const empty = queueList.querySelector(".queue-empty");
-  if (empty) empty.hidden = queueTasks.size > 0;
+  taskSummary.textContent = parts.length ? `· ${parts.join(" · ")}` : "";
+  const active = counts.running + counts.queued;
+  taskBadge.hidden = active === 0;
+  taskBadge.textContent = String(active);
+  const empty = taskListEl.querySelector(".queue-empty");
+  if (empty) empty.hidden = taskEntries.size > 0;
 }
 
-window.videoFinder.onDlpQueue((payload) => {
-  if (payload.type === "update") renderQueueTask(payload.task);
-  else if (payload.type === "remove") removeQueueTask(payload.id);
+function setTaskDrawerOpen(open) {
+  taskDrawer.classList.toggle("is-open", open);
+  taskDrawer.setAttribute("aria-hidden", String(!open));
+  taskToggle.setAttribute("aria-expanded", String(open));
+  taskBackdrop.hidden = !open;
+}
+
+taskToggle.addEventListener("click", () => setTaskDrawerOpen(!taskDrawer.classList.contains("is-open")));
+taskClose.addEventListener("click", () => setTaskDrawerOpen(false));
+taskBackdrop.addEventListener("click", () => setTaskDrawerOpen(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && taskDrawer.classList.contains("is-open")) setTaskDrawerOpen(false);
+});
+taskCancelAll.addEventListener("click", () => window.videoFinder.taskCancelAll());
+taskClearDone.addEventListener("click", () => window.videoFinder.taskClearFinished());
+
+window.videoFinder.onTaskUpdate((payload) => {
+  if (payload.type === "remove") {
+    removeTaskEntry(payload.id);
+    return;
+  }
+  renderTask(payload.task);
+  taskWatchers.get(payload.task.id)?.forEach((fn) => fn(payload.task));
 });
 
-queueCancelAll?.addEventListener("click", () => window.videoFinder.dlpQueueCancelAll());
-queueClearDone?.addEventListener("click", () => window.videoFinder.dlpQueueClearFinished());
-
-const QUEUE_PARALLEL_KEY = "videoFinder.queueParallel";
-function readStoredParallel() {
+// entries: [{ kind, job }] -> task ids. Throws with a readable message.
+async function submitTasks(entries) {
   try {
-    return localStorage.getItem(QUEUE_PARALLEL_KEY) || "";
-  } catch {
-    return "";
+    const res = await window.videoFinder.taskAdd(entries);
+    return res.ids;
+  } catch (error) {
+    throw new Error(ipcErrorMessage(error));
   }
 }
-if (queueParallel) {
-  const stored = readStoredParallel();
-  if (stored && [...queueParallel.options].some((o) => o.value === stored)) {
-    queueParallel.value = stored;
+
+function watchTask(id, fn) {
+  if (!taskWatchers.has(id)) taskWatchers.set(id, new Set());
+  taskWatchers.get(id).add(fn);
+  const entry = taskEntries.get(id);
+  if (entry) fn(entry.task);
+}
+
+// Mirror the latest task a page submitted into that page's own status line,
+// progress bar and cancel / reveal buttons.
+function createTaskStatus({ stateEl, progressEl, cancelBtn, revealBtn }) {
+  let currentId = null;
+  let currentTask = null;
+
+  cancelBtn?.addEventListener("click", () => {
+    if (currentId) window.videoFinder.taskCancel(currentId);
+  });
+  revealBtn?.addEventListener("click", () => {
+    if (currentTask?.filePath) window.videoFinder.showFile(currentTask.filePath);
+  });
+
+  function show(task, formatDone) {
+    currentTask = task;
+    const active = task.state === "queued" || task.state === "running";
+    if (cancelBtn) cancelBtn.disabled = !active;
+    if (revealBtn) revealBtn.hidden = task.state !== "done";
+    if (task.state === "queued") {
+      stateEl.textContent = "已加入队列，排队中…（右上角「任务」可查看全部）";
+      progressEl.style.width = "0%";
+    } else if (task.state === "running") {
+      stateEl.textContent = task.text || "进行中…";
+      if (typeof task.percent === "number") progressEl.style.width = `${Math.min(100, task.percent)}%`;
+    } else if (task.state === "done") {
+      stateEl.textContent = formatDone ? formatDone(task) : `完成 · ${formatBytes(task.size)}`;
+      progressEl.style.width = "100%";
+    } else if (task.state === "error") {
+      stateEl.textContent = `失败：${task.error}`;
+    } else if (task.state === "canceled") {
+      stateEl.textContent = "已取消";
+    }
   }
-  window.videoFinder.dlpQueueSetParallel(Number(queueParallel.value));
-  queueParallel.addEventListener("change", () => {
+
+  return {
+    track(id, { formatDone } = {}) {
+      currentId = id;
+      watchTask(id, (task) => {
+        if (id === currentId) show(task, formatDone);
+      });
+    },
+    // The page reset (e.g. a new input was picked): stop mirroring.
+    reset() {
+      currentId = null;
+      currentTask = null;
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (revealBtn) revealBtn.hidden = true;
+    },
+  };
+}
+
+const TASK_LIMIT_KEY = "videoFinder.taskLimit.";
+function initLaneLimit(select, lane) {
+  if (!select) return;
+  try {
+    const stored = localStorage.getItem(TASK_LIMIT_KEY + lane);
+    if (stored && [...select.options].some((o) => o.value === stored)) select.value = stored;
+  } catch {
+    /* preference only */
+  }
+  window.videoFinder.taskSetLimit(lane, Number(select.value));
+  select.addEventListener("change", () => {
     try {
-      localStorage.setItem(QUEUE_PARALLEL_KEY, queueParallel.value);
+      localStorage.setItem(TASK_LIMIT_KEY + lane, select.value);
     } catch {
       /* preference only */
     }
-    window.videoFinder.dlpQueueSetParallel(Number(queueParallel.value));
+    window.videoFinder.taskSetLimit(lane, Number(select.value));
   });
 }
+initLaneLimit(taskLimitNetwork, "network");
+initLaneLimit(taskLimitCpu, "cpu");
 
 // The queue lives in the main process; rebuild the view after a reload.
-window.videoFinder.dlpQueueList().then(({ tasks }) => tasks.forEach(renderQueueTask));
+window.videoFinder.taskList().then(({ tasks }) => tasks.forEach(renderTask));
 
 if (infoDropZone) {
   const onDragOver = (event) => {

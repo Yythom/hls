@@ -3,6 +3,7 @@ const path = require("path");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 const { isLikelyVideoResource, isMp4Item, delay } = require("./media");
+const { currentSignal, throwIfCanceled } = require("./task-context");
 
 function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEvent }) {
   const DOWNLOAD_SEGMENT_SIZE = 4 * 1024 * 1024;
@@ -12,6 +13,7 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
   async function probeResource(item, baseHeaders) {
     try {
       const head = await fetch(item.url, {
+        signal: currentSignal(),
         method: "HEAD",
         redirect: "follow",
         headers: baseHeaders,
@@ -33,6 +35,7 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
     }
 
     const probe = await fetch(item.url, {
+      signal: currentSignal(),
       redirect: "follow",
       headers: { ...baseHeaders, Range: "bytes=0-0" },
     });
@@ -74,6 +77,7 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
 
       try {
         const res = await fetch(item.url, {
+          signal: currentSignal(),
           redirect: "follow",
           headers: { ...baseHeaders, Range: `bytes=${rangeStart}-${seg.end}` },
         });
@@ -100,6 +104,7 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
         }
         return;
       } catch (error) {
+        throwIfCanceled();
         if (attempt === DOWNLOAD_MAX_RETRIES) throw error;
         logEvent("warn", "Segment retrying", {
           url: item.url,
@@ -151,7 +156,11 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
     let lastError;
     for (let attempt = 0; attempt <= DOWNLOAD_MAX_RETRIES; attempt++) {
       try {
-        const res = await fetch(item.url, { redirect: "follow", headers: baseHeaders });
+        const res = await fetch(item.url, {
+          signal: currentSignal(),
+          redirect: "follow",
+          headers: baseHeaders,
+        });
         if (!res.ok) throw new Error(`Download failed with HTTP ${res.status}.`);
 
         const total = Number(res.headers.get("content-length")) || 0;
@@ -170,6 +179,7 @@ function createHttpDownloader({ makeDownloadHeaders, remuxMp4File, send, logEven
         return { received, total };
       } catch (error) {
         lastError = error;
+        throwIfCanceled();
         if (attempt === DOWNLOAD_MAX_RETRIES) break;
         logEvent("warn", "Single-stream retry", {
           url: item.url,

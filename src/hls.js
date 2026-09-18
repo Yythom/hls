@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { delay } = require("./media");
+const { currentSignal, throwIfCanceled } = require("./task-context");
 
 const DOWNLOAD_MAX_RETRIES = 5;
 
@@ -170,7 +171,7 @@ function createHlsDownloader({
   }
 
   async function fetchAsBuffer(url, headers, expectRange) {
-    const res = await fetch(url, { redirect: "follow", headers });
+    const res = await fetch(url, { signal: currentSignal(), redirect: "follow", headers });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} fetching ${url}`);
     }
@@ -212,7 +213,7 @@ function createHlsDownloader({
   }
 
   async function fetchAsText(url, headers) {
-    const res = await fetch(url, { redirect: "follow", headers });
+    const res = await fetch(url, { signal: currentSignal(), redirect: "follow", headers });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} fetching ${url}`);
     }
@@ -265,6 +266,7 @@ function createHlsDownloader({
         return plain.length;
       } catch (error) {
         lastError = error;
+        throwIfCanceled();
         if (error.fatal) break;
         if (attempt === DOWNLOAD_MAX_RETRIES) break;
         logEvent("warn", "HLS segment retrying", {
@@ -430,6 +432,7 @@ function createHlsDownloader({
       const concurrency = Math.min(HLS_MAX_PARALLEL, totalSegments);
       const workers = Array.from({ length: concurrency }, async () => {
         while (true) {
+          throwIfCanceled();
           const idx = nextIndex++;
           if (idx >= totalSegments) return;
           const segment = playlist.segments[idx];

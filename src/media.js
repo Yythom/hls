@@ -1,5 +1,6 @@
 const path = require("path");
 const crypto = require("crypto");
+const { currentSignal } = require("./task-context");
 
 const VIDEO_EXTENSIONS = [
   "mp4",
@@ -130,8 +131,26 @@ function outputFileNameForCandidate(item) {
   return `${baseName}.mp4`;
 }
 
+// Rejects early if the surrounding queued task is canceled, so retry backoffs
+// don't hold a canceled download open.
 function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const signal = currentSignal();
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 module.exports = {

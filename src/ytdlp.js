@@ -1,7 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
 const { stageChromiumProfile, isChromiumBrowser } = require("./win-cookies");
+const { bindChildToTask } = require("./task-context");
 
 const SUPPORTED_COOKIE_BROWSERS = new Set([
   "brave",
@@ -54,19 +55,42 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     return cachedYtDlpPath;
   }
 
-  function runYtDlp(args, { onLine, signal } = {}) {
+  // The bundled yt-dlp is a PyInstaller one-file build: the process we spawn
+  // is only a bootloader that runs the real yt-dlp as its child, which in turn
+  // spawns ffmpeg. Killing just the bootloader orphans the rest, and they keep
+  // downloading in the background. So kill the whole tree.
+  function killTree(child) {
+    if (!child.pid || child.exitCode !== null) return;
+    if (process.platform === "win32") {
+      execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], () => {});
+      return;
+    }
+    try {
+      // Negative pid = the process group created by `detached: true`.
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+  }
+
+  // `collectStdout: false` for long downloads, whose progress output is only
+  // needed line by line and would otherwise pile up for the whole run.
+  function runYtDlp(args, { onLine, collectStdout = true } = {}) {
     return new Promise((resolve, reject) => {
-      const child = spawn(ytDlpPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(ytDlpPath(), args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        // Own process group on POSIX so killTree can reach every descendant.
+        detached: process.platform !== "win32",
+      });
       let stdout = "";
       let stderr = "";
       let killed = false;
 
-      if (signal) {
-        signal.kill = () => {
-          killed = true;
-          if (!child.killed) child.kill("SIGKILL");
-        };
-      }
+      // Inside a queued task, canceling it kills the whole yt-dlp tree.
+      bindChildToTask(child, () => {
+        killed = true;
+        killTree(child);
+      });
 
       const handleLine = (line) => {
         if (onLine) onLine(line);
@@ -75,7 +99,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       let buf = "";
       child.stdout.on("data", (chunk) => {
         const text = chunk.toString();
-        stdout += text;
+        if (collectStdout) stdout += text;
         buf += text;
         let idx;
         while ((idx = buf.indexOf("\n")) >= 0) {
@@ -320,8 +344,10 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
   // Download one item. Either `output` (an exact file path) or `outputDir`
   // (+ optional `namePrefix`, letting yt-dlp name the file from the title) must
   // be given. `playlistItem` downloads that 1-based entry of `url` as a
-  // playlist, for entries yt-dlp exposes no standalone URL for.
-  async function runDownload(payload, { signal, onProgress } = {}) {
+  // playlist, for entries yt-dlp exposes no standalone URL for. `tempDir`, if
+  // given, receives every intermediate file (`.part`, fragments, unmerged
+  // streams) so nothing half-done ever lands next to the user's files.
+  async function runDownload(payload, { onProgress } = {}) {
     const { url, format, output, outputDir, mergeFormat, playlistItem } = payload || {};
     if (!url) throw new Error("URL is required.");
     if (!output && !outputDir) throw new Error("Output path is required.");
@@ -333,14 +359,17 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     const audioFormat = AUDIO_FORMATS.has(String(payload?.audioFormat || "").toLowerCase())
       ? String(payload.audioFormat).toLowerCase()
       : "";
-    // An exact path is still parsed as an output template; escape its `%`.
+    // yt-dlp only honors `-P temp:` for a template relative to `-P home:`.
+    // An exact name is still parsed as a template, so escape its `%`.
+    const homeDir = output ? path.dirname(output) : outputDir;
     const template = output
-      ? output.replace(/%/g, "%%")
-      : path.join(outputDir, `${String(payload?.namePrefix || "").replace(/%/g, "%%")}%(title).150B.%(ext)s`);
+      ? path.basename(output).replace(/%/g, "%%")
+      : `${String(payload?.namePrefix || "").replace(/%/g, "%%")}%(title).150B.%(ext)s`;
+    const tempDir = payload?.tempDir || "";
     const ext = output ? path.extname(output).replace(/^\./, "").toLowerCase() || "mp4" : "mp4";
     // yt-dlp reports the final path (after merge / audio extraction) here.
     const printFile = path.join(
-      app.getPath("temp"),
+      tempDir || app.getPath("temp"),
       `vf-dlp-${process.pid}-${Date.now()}-${++printFileSeq}.txt`
     );
 
@@ -367,6 +396,9 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
       "--print-to-file",
       "after_move:filepath",
       printFile,
+      "-P",
+      `home:${homeDir}`,
+      ...(tempDir ? ["-P", `temp:${tempDir}`] : []),
       "-o",
       template,
     ];
@@ -394,7 +426,7 @@ function createYtdlp({ app, dialog, getMainWindow, ffmpegPath, send, logEvent })
     const progress = onProgress || (() => {});
     try {
       await runYtDlp(args, {
-        signal,
+        collectStdout: false,
         onLine: (line) => {
           if (!line) return;
           const dl = line.match(/^\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)(?:\s+at\s+([\d.]+\s*\w+\/s))?(?:\s+ETA\s+([\d:]+))?/);

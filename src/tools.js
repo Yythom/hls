@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const { bindChildToTask } = require("./task-context");
 
 function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent }) {
   function parseTimecode(input) {
@@ -44,6 +45,7 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
       const child = spawn(ffmpegPath(), ["-hide_banner", "-i", filePath], {
         stdio: ["ignore", "pipe", "pipe"],
       });
+      bindChildToTask(child);
       let stderr = "";
       child.stderr.on("data", (chunk) => {
         stderr += chunk.toString();
@@ -96,13 +98,11 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
     return keep;
   }
 
-  let activeTrimChild = null;
-
   function spawnTrimFfmpeg(args, { onProgressTime } = {}) {
     return new Promise((resolve, reject) => {
       logEvent("debug", "Running trim ffmpeg", { args: safeFfmpegArgs(args) });
       const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"] });
-      activeTrimChild = child;
+      bindChildToTask(child);
 
       let stderr = "";
       let stdoutBuf = "";
@@ -129,13 +129,9 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
         if (stderr.length > 6000) stderr = stderr.slice(-6000);
       });
 
-      child.on("error", (error) => {
-        activeTrimChild = null;
-        reject(error);
-      });
+      child.on("error", reject);
 
       child.on("close", (code, signal) => {
-        activeTrimChild = null;
         if (signal) {
           reject(new Error(`Trim canceled (${signal})`));
           return;
@@ -318,13 +314,11 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
   // Tools (audio extract / format convert / gif / concat)
   // ─────────────────────────────────────────────────────────────────────────────
 
-  let activeToolsChild = null;
-
   function spawnToolsFfmpeg(args, { onProgressTime, cwd } = {}) {
     return new Promise((resolve, reject) => {
       logEvent("debug", "Running tools ffmpeg", { args: safeFfmpegArgs(args) });
       const child = spawn(ffmpegPath(), args, { stdio: ["ignore", "pipe", "pipe"], cwd });
-      activeToolsChild = child;
+      bindChildToTask(child);
 
       let stderr = "";
       let stdoutBuf = "";
@@ -351,13 +345,9 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
         if (stderr.length > 6000) stderr = stderr.slice(-6000);
       });
 
-      child.on("error", (error) => {
-        activeToolsChild = null;
-        reject(error);
-      });
+      child.on("error", reject);
 
       child.on("close", (code, signal) => {
-        activeToolsChild = null;
         if (signal) {
           reject(new Error(`Operation canceled (${signal})`));
           return;
@@ -869,10 +859,6 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
     computeKeepRanges,
     runTrimAccurate,
     runTrimFast,
-    cancelTrim: () => {
-      if (activeTrimChild && !activeTrimChild.killed) activeTrimChild.kill("SIGKILL");
-      return { ok: true };
-    },
     generateThumbnail,
     runExtractAudio,
     runConvert,
@@ -881,10 +867,6 @@ function createTools({ ffmpegPath, ffmpegHeaders, safeFfmpegArgs, send, logEvent
     runWatermark,
     runGif,
     runConcat,
-    cancelTools: () => {
-      if (activeToolsChild && !activeToolsChild.killed) activeToolsChild.kill("SIGKILL");
-      return { ok: true };
-    },
   };
 }
 

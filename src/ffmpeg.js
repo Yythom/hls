@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const { bindChildToTask } = require("./task-context");
 
 function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
   let cachedFfmpegPath;
@@ -54,6 +55,13 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
           "-nostats",
           "-i",
           filePath,
+          // Keep every video / audio track (ffmpeg's default picks just one
+          // audio). Not `-map 0`: subtitle / data codecs MP4 can't hold would
+          // make the whole remux fail.
+          "-map",
+          "0:v?",
+          "-map",
+          "0:a?",
           "-c",
           "copy",
           "-movflags",
@@ -86,6 +94,7 @@ function createFfmpeg({ app, makeDownloadHeaders, send, logEvent }) {
       const child = spawn(ffmpegPath(), args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
+      bindChildToTask(child);
 
       let stderr = "";
       let outTimeMs = 0;

@@ -42,6 +42,10 @@
         <button class="tab" type="button" data-tab="online" role="tab">
           在线视频
         </button>
+        <button id="taskToggle" class="task-toggle" type="button" aria-controls="taskDrawer" aria-expanded="false">
+          任务
+          <span id="taskBadge" class="task-badge" hidden>0</span>
+        </button>
       </nav>
 
       <div class="tab-panel" data-panel="scan">
@@ -1042,26 +1046,6 @@
               <code>YT_DLP_PATH</code> 环境变量后启动 App。
             </p>
           </div>
-
-          <div class="trim-card">
-            <div class="trim-section-head">
-              <h3>下载队列 <span id="queueSummary" class="trim-muted"></span></h3>
-              <div class="online-playlist-tools">
-                <label class="trim-muted" for="queueParallel">同时下载</label>
-                <select id="queueParallel">
-                  <option value="1">1</option>
-                  <option value="2" selected>2</option>
-                  <option value="3">3</option>
-                  <option value="4">4</option>
-                </select>
-                <button id="queueCancelAll" type="button" class="secondary">全部取消</button>
-                <button id="queueClearDone" type="button" class="secondary">清除已结束</button>
-              </div>
-            </div>
-            <div id="queueList" class="queue-list">
-              <p class="queue-empty trim-muted">队列为空。解析视频后点击「加入下载队列」。</p>
-            </div>
-          </div>
         </section>
       </div>
 
@@ -1137,6 +1121,38 @@
       </div>
     </main>
 
+    <div id="taskBackdrop" class="task-backdrop" hidden></div>
+    <aside id="taskDrawer" class="task-drawer" aria-label="任务中心" aria-hidden="true">
+      <header class="task-drawer-head">
+        <h2>任务中心 <span id="taskSummary" class="trim-muted"></span></h2>
+        <button id="taskClose" type="button" class="secondary" aria-label="关闭">关闭</button>
+      </header>
+      <div class="task-drawer-controls">
+        <label class="trim-muted" for="taskLimitNetwork">同时下载</label>
+        <select id="taskLimitNetwork">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="6">6</option>
+        </select>
+        <label class="trim-muted" for="taskLimitCpu">同时处理</label>
+        <select id="taskLimitCpu">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+        <span class="task-drawer-spacer"></span>
+        <button id="taskCancelAll" type="button" class="secondary">全部取消</button>
+        <button id="taskClearDone" type="button" class="secondary">清除已结束</button>
+      </div>
+      <p class="task-drawer-hint trim-muted">
+        压缩、转码会占满 CPU，「同时处理」保持 1 通常最快。
+      </p>
+      <div id="taskList" class="queue-list">
+        <p class="queue-empty trim-muted">暂无任务。在各页面开始下载、压缩、转码等操作后，任务会出现在这里。</p>
+      </div>
+    </aside>
     <script src="./renderer.js"></script>
   </body>
 </html>
